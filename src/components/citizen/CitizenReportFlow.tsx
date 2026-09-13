@@ -4,7 +4,7 @@
  * REAL AI VERSION
  *
  * STEP 1 — Capture evidence
- * STEP 2 — Real Gemini image analysis through FastAPI
+ * STEP 2 — Real multimodal image analysis through FastAPI
  * STEP 3 — Citizen confirms detected issue / location / description
  * DONE   — Confirmation
  *
@@ -16,13 +16,19 @@
  *   ↓
  * FastAPI /analyze-image
  *   ↓
- * Gemini
+ * OpenRouter free vision model
  *   ↓
- * Confirmation
+ * AI result stored in React state
+ *   ↓
+ * Citizen confirmation
  *   ↓
  * FastAPI /reports
  *   ↓
- * Gemini + Supabase
+ * Existing AI result + Supabase
+ *
+ * IMPORTANT:
+ * The image is analyzed ONLY ONCE.
+ * /reports receives the already-generated AI analysis.
  */
 
 import React, {
@@ -71,13 +77,24 @@ type Step =
   | 'done';
 
 
-type GeminiAnalysis = {
+type VisionAnalysis = {
   issue_type: string;
   confidence: number;
   severity: string;
   description: string;
   recommended_department: string;
   visible_evidence: string[];
+
+  /*
+   * These fields are returned by the new
+   * OpenRouter backend.
+   *
+   * They are optional so the frontend remains
+   * compatible if the backend does not return them.
+   */
+  ai_provider?: string;
+  model_used?: string;
+  model_router?: string;
 };
 
 
@@ -100,7 +117,8 @@ const STEP_NUMBER: Record<
    ========================================================= */
 
 const API_URL =
-  import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+  import.meta.env.VITE_API_URL ||
+  'http://127.0.0.1:8000';
 
 
 /* =========================================================
@@ -116,12 +134,13 @@ export const CitizenReportFlow: React.FC<{
 }) => {
 
   /*
-   * We still use CivicContext for:
+   * CivicContext is currently used for:
+   *
    * - toast notifications
-   * - offline mode compatibility
+   * - existing offline compatibility
    *
    * Online submission itself is handled directly
-   * by this component through POST /reports.
+   * through the FastAPI endpoints.
    */
   const {
     showToast,
@@ -137,7 +156,7 @@ export const CitizenReportFlow: React.FC<{
 
 
   /*
-   * Preview URL shown in the browser.
+   * Browser preview URL.
    */
   const [photo, setPhoto] =
     useState<string | null>(null);
@@ -146,22 +165,33 @@ export const CitizenReportFlow: React.FC<{
   /*
    * Actual File object.
    *
-   * This is the file that gets sent to FastAPI.
+   * This is the image sent to FastAPI.
    */
   const [photoFile, setPhotoFile] =
     useState<File | null>(null);
 
 
+  /*
+   * Citizen's description.
+   */
   const [description, setDescription] =
     useState('');
 
 
+  /*
+   * Selected Chandigarh sector.
+   */
   const [sector, setSector] =
     useState<string>(
       REPORT_SECTORS[0]
     );
 
 
+  /*
+   * Category detected by AI.
+   *
+   * The citizen can change it during confirmation.
+   */
   const [detectedCategory, setDetectedCategory] =
     useState<IssueCategory>(
       'pothole'
@@ -169,10 +199,15 @@ export const CitizenReportFlow: React.FC<{
 
 
   /*
-   * Real Gemini response.
+   * IMPORTANT:
+   *
+   * This stores the result of the ONE and ONLY
+   * image-analysis request.
+   *
+   * The exact same object is sent to /reports.
    */
   const [aiAnalysis, setAiAnalysis] =
-    useState<GeminiAnalysis | null>(
+    useState<VisionAnalysis | null>(
       null
     );
 
@@ -216,8 +251,8 @@ export const CitizenReportFlow: React.FC<{
   /*
    * Kept for compatibility with the existing project.
    *
-   * It is NOT used for the online submission anymore.
-   * The actual File is sent directly to FastAPI.
+   * The actual online submission uses the File object
+   * directly.
    */
   const fileToDataUrl = (
     file: File
@@ -236,26 +271,30 @@ export const CitizenReportFlow: React.FC<{
             typeof reader.result ===
             'string'
           ) {
+
             resolve(
               reader.result
             );
+
           } else {
+
             reject(
               new Error(
                 'Could not read image.'
               )
             );
           }
-
         };
 
 
         reader.onerror = () => {
+
           reject(
             new Error(
               'Could not read image.'
             )
           );
+
         };
 
 
@@ -266,7 +305,7 @@ export const CitizenReportFlow: React.FC<{
 
 
   /* =======================================================
-     GEMINI IMAGE ANALYSIS
+     OPENROUTER IMAGE ANALYSIS
      ======================================================= */
 
   /*
@@ -274,11 +313,15 @@ export const CitizenReportFlow: React.FC<{
    *
    * POST /analyze-image
    *
-   * FastAPI then sends the image to Gemini.
+   * FastAPI sends the image to the configured
+   * OpenRouter multimodal vision model.
+   *
+   * IMPORTANT:
+   * This function is called ONLY from startAnalysis().
    */
   const analyzeImage = async (
     file: File
-  ): Promise<GeminiAnalysis> => {
+  ): Promise<VisionAnalysis> => {
 
     const formData =
       new FormData();
@@ -306,9 +349,14 @@ export const CitizenReportFlow: React.FC<{
     const data =
       await response
         .json()
-        .catch(() => null);
+        .catch(
+          () => null
+        );
 
 
+    /*
+     * Handle backend errors.
+     */
     if (!response.ok) {
 
       const message =
@@ -323,21 +371,91 @@ export const CitizenReportFlow: React.FC<{
 
 
     /*
-     * Basic validation so the UI doesn't
-     * crash if Gemini/backend returns
-     * malformed data.
+     * Basic validation.
      */
     if (
       !data ||
       typeof data !== 'object'
     ) {
+
       throw new Error(
         'The AI returned an invalid response.'
       );
     }
 
 
-    return data as GeminiAnalysis;
+    /*
+     * Validate the important AI fields.
+     */
+    if (
+      typeof data.issue_type !== 'string' ||
+      typeof data.confidence !== 'number' ||
+      typeof data.severity !== 'string' ||
+      typeof data.description !== 'string' ||
+      typeof data.recommended_department !== 'string'
+    ) {
+
+      throw new Error(
+        'The AI response is missing required analysis fields.'
+      );
+    }
+
+
+    /*
+     * Normalize visible_evidence.
+     *
+     * This protects the UI if the backend returns
+     * an unexpected value.
+     */
+    const visibleEvidence =
+      Array.isArray(data.visible_evidence)
+        ? data.visible_evidence
+            .filter(
+              (item: unknown) =>
+                typeof item === 'string'
+            )
+        : [];
+
+
+    /*
+     * Return the already-generated analysis.
+     *
+     * It will later be sent to /reports.
+     */
+    return {
+      issue_type:
+        data.issue_type,
+
+      confidence:
+        Number(data.confidence),
+
+      severity:
+        data.severity,
+
+      description:
+        data.description,
+
+      recommended_department:
+        data.recommended_department,
+
+      visible_evidence:
+        visibleEvidence,
+
+      ai_provider:
+        typeof data.ai_provider === 'string'
+          ? data.ai_provider
+          : undefined,
+
+      model_used:
+        typeof data.model_used === 'string'
+          ? data.model_used
+          : undefined,
+
+      model_router:
+        typeof data.model_router === 'string'
+          ? data.model_router
+          : undefined,
+    };
   };
 
 
@@ -367,6 +485,7 @@ export const CitizenReportFlow: React.FC<{
         normalized
       )
     ) {
+
       return normalized as IssueCategory;
     }
 
@@ -374,6 +493,7 @@ export const CitizenReportFlow: React.FC<{
     /*
      * Common AI variations.
      */
+
     if (
       normalized === 'road_damage'
     ) {
@@ -383,6 +503,7 @@ export const CitizenReportFlow: React.FC<{
           'road_damage'
         )
       ) {
+
         return 'road_damage' as IssueCategory;
       }
     }
@@ -397,6 +518,7 @@ export const CitizenReportFlow: React.FC<{
           'pothole'
         )
       ) {
+
         return 'pothole' as IssueCategory;
       }
     }
@@ -411,6 +533,7 @@ export const CitizenReportFlow: React.FC<{
           'drainage'
         )
       ) {
+
         return 'drainage' as IssueCategory;
       }
     }
@@ -425,6 +548,7 @@ export const CitizenReportFlow: React.FC<{
           'streetlight'
         )
       ) {
+
         return 'streetlight' as IssueCategory;
       }
     }
@@ -439,6 +563,7 @@ export const CitizenReportFlow: React.FC<{
           'waste'
         )
       ) {
+
         return 'waste' as IssueCategory;
       }
     }
@@ -452,6 +577,7 @@ export const CitizenReportFlow: React.FC<{
         'other'
       )
     ) {
+
       return 'other' as IssueCategory;
     }
 
@@ -488,10 +614,7 @@ export const CitizenReportFlow: React.FC<{
 
 
     /*
-     * Optional size protection.
-     *
-     * 10 MB is more than enough for
-     * a civic issue photograph.
+     * 10 MB maximum.
      */
     const MAX_SIZE =
       10 * 1024 * 1024;
@@ -519,6 +642,8 @@ export const CitizenReportFlow: React.FC<{
 
     /*
      * Reset previous AI result.
+     *
+     * A new image must always receive a new analysis.
      */
     setAnalysisError(null);
 
@@ -582,6 +707,15 @@ export const CitizenReportFlow: React.FC<{
 
 
       /*
+       * Prevent another analysis request if one
+       * is already running.
+       */
+      if (isAnalyzing) {
+        return;
+      }
+
+
+      /*
        * Reset errors.
        */
       setSubmitError(null);
@@ -603,6 +737,9 @@ export const CitizenReportFlow: React.FC<{
         );
 
 
+        /*
+         * ONE AI CALL.
+         */
         const result =
           await analyzeImage(
             photoFile
@@ -616,7 +753,10 @@ export const CitizenReportFlow: React.FC<{
 
 
         /*
-         * Store AI result.
+         * Store the result.
+         *
+         * This object will be reused during
+         * final submission.
          */
         setAiAnalysis(
           result
@@ -624,8 +764,8 @@ export const CitizenReportFlow: React.FC<{
 
 
         /*
-         * Convert Gemini issue type
-         * into frontend category.
+         * Convert AI issue type into the
+         * frontend civic category.
          */
         const mappedCategory =
           mapIssueTypeToCategory(
@@ -650,7 +790,7 @@ export const CitizenReportFlow: React.FC<{
       ) {
 
         console.error(
-          'Gemini analysis failed:',
+          'Vision analysis failed:',
           error
         );
 
@@ -681,19 +821,21 @@ export const CitizenReportFlow: React.FC<{
   /*
    * IMPORTANT:
    *
-   * This does NOT call submitCitizenReport().
+   * This function DOES NOT analyze the image.
    *
-   * It sends the real image File directly to:
+   * The image has already been analyzed by
+   * /analyze-image.
    *
-   * POST /reports
+   * We send the saved `aiAnalysis` object to
+   * /reports.
    *
-   * FastAPI then:
+   * Therefore:
    *
-   * 1. validates the image
-   * 2. analyzes it with Gemini
-   * 3. creates an incident
-   * 4. creates a linked report
-   * 5. stores both in Supabase
+   *     Analyze button = 1 AI request
+   *     Confirm button = 0 AI requests
+   *
+   * This prevents unnecessary OpenRouter usage
+   * and prevents the second invalid-JSON failure.
    */
   const submit =
     async () => {
@@ -705,6 +847,22 @@ export const CitizenReportFlow: React.FC<{
 
         setSubmitError(
           'No photo is attached to this report.'
+        );
+
+        return;
+      }
+
+
+      /*
+       * AI analysis is mandatory.
+       *
+       * The citizen should never be able to reach
+       * the final backend without an analysis result.
+       */
+      if (!aiAnalysis) {
+
+        setSubmitError(
+          'AI analysis is missing. Please analyze the photo again.'
         );
 
         return;
@@ -727,7 +885,7 @@ export const CitizenReportFlow: React.FC<{
       try {
 
         console.log(
-          'Submitting CivicLens report...'
+          'Submitting CivicLens report using existing AI analysis...'
         );
 
 
@@ -776,12 +934,40 @@ export const CitizenReportFlow: React.FC<{
 
 
         /*
+         * ==================================================
+         * CRITICAL FIX
+         * ==================================================
+         *
+         * Send the result that was already generated
+         * by /analyze-image.
+         *
+         * /reports MUST NOT call the vision model again.
+         */
+        formData.append(
+          'ai_analysis',
+          JSON.stringify({
+            ...aiAnalysis,
+
+            /*
+             * If the citizen changed the detected category
+             * during confirmation, preserve that confirmed
+             * category for the backend.
+             *
+             * The original AI issue_type is still retained
+             * in `issue_type`.
+             */
+            confirmed_category:
+              detectedCategory,
+          })
+        );
+
+
+        /*
          * Send report to FastAPI.
          *
-         * IMPORTANT:
          * Do NOT manually set Content-Type.
          *
-         * Browser automatically creates:
+         * The browser automatically creates:
          *
          * multipart/form-data;
          * boundary=...
@@ -839,8 +1025,10 @@ export const CitizenReportFlow: React.FC<{
           {
             incidentId:
               data?.incident_id,
+
             report:
               data?.report,
+
             incident:
               data?.incident,
           }
@@ -1033,6 +1221,7 @@ export const CitizenReportFlow: React.FC<{
               ]
             } OF 3`
           }
+
           title={
             step === 'capture'
               ? 'Capture what needs attention'
@@ -1598,6 +1787,46 @@ export const CitizenReportFlow: React.FC<{
               )}
 
 
+              {/* AI PROVIDER */}
+
+              {aiAnalysis?.ai_provider && (
+
+                <div>
+
+                  <dt>
+                    AI provider
+                  </dt>
+
+
+                  <dd>
+                    {aiAnalysis.ai_provider}
+                  </dd>
+
+                </div>
+
+              )}
+
+
+              {/* MODEL */}
+
+              {aiAnalysis?.model_used && (
+
+                <div>
+
+                  <dt>
+                    Model
+                  </dt>
+
+
+                  <dd>
+                    {aiAnalysis.model_used}
+                  </dd>
+
+                </div>
+
+              )}
+
+
               {/* SEVERITY */}
 
               {aiAnalysis && (
@@ -1776,6 +2005,7 @@ export const CitizenReportFlow: React.FC<{
                     setStep(
                       'capture'
                     );
+
                   }
 
                 }}
@@ -1801,7 +2031,8 @@ export const CitizenReportFlow: React.FC<{
                   submit
                 }
                 disabled={
-                  isSubmitting
+                  isSubmitting ||
+                  !aiAnalysis
                 }
               >
 
