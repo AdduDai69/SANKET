@@ -30,11 +30,42 @@ const CITIZEN_MARKER_VISUAL: Record<
   IncidentStatus,
   { color: string; soft: string; border: string; label: string }
 > = {
-  reported: { color: '#4E5D6C', soft: '#EEF0F3', border: '#DDE1E6', label: 'Reported' },
-  needs_review: { color: '#C88427', soft: '#FBF3E0', border: '#F0E2C4', label: 'Under Review' },
-  assigned: { color: '#24638F', soft: '#EEF5F9', border: '#D4E4EF', label: 'Assigned' },
-  in_progress: { color: '#2F6355', soft: '#EAF3F0', border: '#D3E5DF', label: 'In Progress' },
-  resolved: { color: '#1E6B42', soft: '#E9F4ED', border: '#CDE7D6', label: 'Resolved' },
+  reported: {
+    color: '#4E5D6C',
+    soft: '#EEF0F3',
+    border: '#DDE1E6',
+    label: 'Reported',
+  },
+  needs_review: {
+    color: '#C88427',
+    soft: '#FBF3E0',
+    border: '#F0E2C4',
+    label: 'Under Review',
+  },
+  assigned: {
+    color: '#24638F',
+    soft: '#EEF5F9',
+    border: '#D4E4EF',
+    label: 'Assigned',
+  },
+  in_progress: {
+    color: '#2F6355',
+    soft: '#EAF3F0',
+    border: '#D3E5DF',
+    label: 'In Progress',
+  },
+  resolved: {
+    color: '#1E6B42',
+    soft: '#E9F4ED',
+    border: '#CDE7D6',
+    label: 'Resolved',
+  },
+  closed: {
+    color: '#1E6B42',
+    soft: '#E9F4ED',
+    border: '#CDE7D6',
+    label: 'Closed',
+  },
 };
 
 /** Simplified stroke glyphs (lucide-style paths) so markers read at small size. */
@@ -69,19 +100,25 @@ export const CivicMap: React.FC<CivicMapProps> = ({
   variant = 'admin',
   onIssueClick,
   userLocation = null,
-  focusTarget = null
+  focusTarget = null,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersRef = useRef<{ [id: string]: L.Marker }>({});
-  const { selectIncident, setIsDetailOpen } = useCivic();
+  const { selectIncident } = useCivic();
 
   // Keep the latest citizen click handler without re-creating markers each render.
   const onIssueClickRef = useRef(onIssueClick);
   onIssueClickRef.current = onIssueClick;
 
-  const userLocationKey = userLocation ? `${userLocation[0].toFixed(5)},${userLocation[1].toFixed(5)}` : '';
-  const focusKey = focusTarget ? `${focusTarget[0].toFixed(5)},${focusTarget[1].toFixed(5)}` : '';
+  const userLocationKey = userLocation
+    ? `${userLocation[0].toFixed(5)},${userLocation[1].toFixed(5)}`
+    : '';
+
+  const focusKey = focusTarget
+    ? `${focusTarget[0].toFixed(5)},${focusTarget[1].toFixed(5)}`
+    : '';
+
   const isCitizen = variant === 'citizen';
 
   useEffect(() => {
@@ -99,7 +136,7 @@ export const CivicMap: React.FC<CivicMapProps> = ({
         doubleClickZoom: true,
         touchZoom: true,
         boxZoom: true,
-        keyboard: true
+        keyboard: true,
       });
 
       // A focused incident opens with its popup visible. As soon as an operator
@@ -108,16 +145,19 @@ export const CivicMap: React.FC<CivicMapProps> = ({
       map.getContainer().style.touchAction = 'none';
 
       // CartoDB Voyager tiles for warm, calm civic palette
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-        maxZoom: 19,
-        subdomains: 'abcd'
-      }).addTo(map);
+      L.tileLayer(
+        'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+        {
+          maxZoom: 19,
+          subdomains: 'abcd',
+        }
+      ).addTo(map);
 
       // Attribution
       L.control
         .attribution({
           position: 'bottomright',
-          prefix: '© OpenStreetMap contributors, CartoDB'
+          prefix: '© OpenStreetMap contributors, CartoDB',
         })
         .addTo(map);
 
@@ -125,7 +165,6 @@ export const CivicMap: React.FC<CivicMapProps> = ({
       L.control.zoom({ position: 'topright' }).addTo(map);
 
       mapInstanceRef.current = map;
-
     }
 
     const map = mapInstanceRef.current;
@@ -164,13 +203,16 @@ export const CivicMap: React.FC<CivicMapProps> = ({
         const customIcon = L.divIcon({
           html: iconHtml,
           className: 'custom-civic-marker',
-          iconSize: [28, 28]
+          iconSize: [28, 28],
         });
 
-        const marker = L.marker([inc.latitude, inc.longitude], { icon: customIcon }).addTo(map);
+        const marker = L.marker([inc.latitude, inc.longitude], {
+          icon: customIcon,
+        }).addTo(map);
 
         // Citizen popup: public information only — no risk scores, no internal metadata.
         const similarCount = inc.confidenceEvidence.relatedReportsCount;
+
         const popupHtml = `
           <div style="padding: 12px 14px; min-width: 210px; font-family: -apple-system, sans-serif; text-align: left;">
             <div style="font-size: 10px; font-weight: 700; color: ${visual.color}; text-transform: uppercase; letter-spacing: 0.5px;">
@@ -214,10 +256,17 @@ export const CivicMap: React.FC<CivicMapProps> = ({
           </div>
         `;
 
-        marker.bindPopup(popupHtml, { autoPan: true, autoPanPadding: [28, 56], keepInView: false });
+        marker.bindPopup(popupHtml, {
+          autoPan: true,
+          autoPanPadding: [28, 56],
+          keepInView: false,
+        });
 
         marker.on('popupopen', () => {
-          const btn = document.getElementById(`citizen-view-btn-${inc.id}`);
+          const btn = document.getElementById(
+            `citizen-view-btn-${inc.id}`
+          );
+
           if (btn) {
             btn.onclick = () => {
               onIssueClickRef.current?.(inc.id);
@@ -239,13 +288,13 @@ export const CivicMap: React.FC<CivicMapProps> = ({
       let border = '#191B1F';
 
       if (isCritical || isHigh) {
-        color = '#C54E38'; // Terracotta
+        color = '#C54E38';
         border = '#902C18';
       } else if (isMedium) {
-        color = '#C88427'; // Amber
+        color = '#C88427';
         border = '#93580F';
       } else {
-        color = '#2C5E48'; // Sage
+        color = '#2C5E48';
         border = '#1E4333';
       }
 
@@ -284,10 +333,12 @@ export const CivicMap: React.FC<CivicMapProps> = ({
       const customIcon = L.divIcon({
         html: iconHtml,
         className: 'custom-civic-marker',
-        iconSize: [28, 28]
+        iconSize: [28, 28],
       });
 
-      const marker = L.marker([inc.latitude, inc.longitude], { icon: customIcon }).addTo(map);
+      const marker = L.marker([inc.latitude, inc.longitude], {
+        icon: customIcon,
+      }).addTo(map);
 
       // Compact popup
       const popupHtml = `
@@ -334,10 +385,15 @@ export const CivicMap: React.FC<CivicMapProps> = ({
         </div>
       `;
 
-      marker.bindPopup(popupHtml, { autoPan: true, autoPanPadding: [28, 56], keepInView: false });
+      marker.bindPopup(popupHtml, {
+        autoPan: true,
+        autoPanPadding: [28, 56],
+        keepInView: false,
+      });
 
       marker.on('popupopen', () => {
         const btn = document.getElementById(`view-btn-${inc.id}`);
+
         if (btn) {
           btn.onclick = () => {
             selectIncident(inc.id, true);
@@ -359,16 +415,33 @@ export const CivicMap: React.FC<CivicMapProps> = ({
     // If an incident is selected, fly to it
     if (selectedIncidentId && markersRef.current[selectedIncidentId]) {
       const selected = incidents.find((i) => i.id === selectedIncidentId);
+
       if (selected) {
-        map.flyTo([selected.latitude, selected.longitude], Math.max(map.getZoom(), 14), { animate: true, duration: 0.45 });
+        map.flyTo(
+          [selected.latitude, selected.longitude],
+          Math.max(map.getZoom(), 14),
+          {
+            animate: true,
+            duration: 0.45,
+          }
+        );
+
         markersRef.current[selectedIncidentId].openPopup();
       }
     }
-  }, [incidents, selectedIncidentId, variant, userLocationKey]);
+  }, [
+    incidents,
+    selectedIncidentId,
+    variant,
+    userLocationKey,
+    onSelectIncident,
+    selectIncident,
+  ]);
 
   // Citizen: approximate "you are here" dot (never other citizens' locations).
   useEffect(() => {
     const map = mapInstanceRef.current;
+
     if (!map || !userLocation) return;
 
     const icon = L.divIcon({
@@ -386,24 +459,35 @@ export const CivicMap: React.FC<CivicMapProps> = ({
         </div>
       `,
       className: 'custom-civic-marker',
-      iconSize: [16, 16]
+      iconSize: [16, 16],
     });
 
     const marker = L.marker(userLocation, { icon }).addTo(map);
-    marker.bindTooltip('Your approximate location', { direction: 'top', offset: [0, -10] });
+
+    marker.bindTooltip('Your approximate location', {
+      direction: 'top',
+      offset: [0, -10],
+    });
 
     return () => {
       marker.remove();
     };
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userLocationKey]);
 
   // Citizen: fly to a requested focus target (locate / recenter).
   useEffect(() => {
     const map = mapInstanceRef.current;
+
     if (!map || !focusKey) return;
+
     const [lat, lng] = focusKey.split(',').map(Number);
-    map.flyTo([lat, lng], Math.max(map.getZoom(), 14), { animate: true, duration: 0.6 });
+
+    map.flyTo([lat, lng], Math.max(map.getZoom(), 14), {
+      animate: true,
+      duration: 0.6,
+    });
   }, [focusKey]);
 
   // Leaflet measures its canvas at creation time. Keep that canvas aligned with
@@ -411,10 +495,18 @@ export const CivicMap: React.FC<CivicMapProps> = ({
   useEffect(() => {
     const element = mapContainerRef.current;
     const map = mapInstanceRef.current;
+
     if (!element || !map) return;
-    const observer = new ResizeObserver(() => map.invalidateSize({ animate: false }));
+
+    const observer = new ResizeObserver(() =>
+      map.invalidateSize({ animate: false })
+    );
+
     observer.observe(element);
-    requestAnimationFrame(() => map.invalidateSize({ animate: false }));
+    requestAnimationFrame(() =>
+      map.invalidateSize({ animate: false })
+    );
+
     return () => observer.disconnect();
   }, []);
 
@@ -424,7 +516,11 @@ export const CivicMap: React.FC<CivicMapProps> = ({
       style={{ height }}
     >
       {/* Map Element */}
-      <div ref={mapContainerRef} className="absolute inset-0" style={{ width: '100%' }} />
+      <div
+        ref={mapContainerRef}
+        className="absolute inset-0"
+        style={{ width: '100%' }}
+      />
 
       {/* Map Legend Overlay */}
       {isCitizen ? (
@@ -432,18 +528,22 @@ export const CivicMap: React.FC<CivicMapProps> = ({
           <span className="font-bold text-[10px] text-[#7E8592] uppercase tracking-wider">
             Public issues:
           </span>
+
           <div className="flex items-center gap-1.5 text-[11px]">
             <span className="w-2.5 h-2.5 rounded-full bg-[#4E5D6C]"></span>
             <span>Reported</span>
           </div>
+
           <div className="flex items-center gap-1.5 text-[11px]">
             <span className="w-2.5 h-2.5 rounded-full bg-[#24638F]"></span>
             <span>Assigned</span>
           </div>
+
           <div className="flex items-center gap-1.5 text-[11px]">
             <span className="w-2.5 h-2.5 rounded-full bg-[#2F6355]"></span>
             <span>In Progress</span>
           </div>
+
           <div className="flex items-center gap-1.5 text-[11px]">
             <span className="w-2.5 h-2.5 rounded-full bg-[#1E6B42]"></span>
             <span>Resolved</span>
@@ -454,14 +554,17 @@ export const CivicMap: React.FC<CivicMapProps> = ({
           <span className="font-bold text-[10px] text-[#7E8592] uppercase tracking-wider">
             Signal Legend:
           </span>
+
           <div className="flex items-center gap-1.5 text-[11px]">
             <span className="w-2.5 h-2.5 rounded-full bg-[#C54E38]"></span>
             <span>Critical / High Risk (&ge;70)</span>
           </div>
+
           <div className="flex items-center gap-1.5 text-[11px]">
             <span className="w-2.5 h-2.5 rounded-full bg-[#C88427]"></span>
             <span>Medium Risk (50-69)</span>
           </div>
+
           <div className="flex items-center gap-1.5 text-[11px]">
             <span className="w-2.5 h-2.5 rounded-full border border-dashed border-[#C88427]"></span>
             <span>Recurring Hotspot</span>

@@ -54,6 +54,11 @@ export const FIELD_STATUS: Record<IncidentStatus, FieldStatusInfo> = {
     tone: 'green',
     explanation: 'Your completion evidence was verified by the municipal team.',
   },
+  closed: {
+  label: 'Closed',
+  tone: 'slate',
+  explanation: 'This field job has been closed after resolution or verification.',
+},
 };
 
 /* ---------------- Job priority (operational context, no formulas) ---------------- */

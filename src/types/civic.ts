@@ -12,6 +12,7 @@ export type IncidentStatus =
   | 'assigned'
   | 'in_progress'
   | 'resolved'
+  | 'closed'
   | 'needs_review';
 
 export type RiskLevel = 'critical' | 'high' | 'medium' | 'low';
@@ -31,7 +32,7 @@ export interface ConfidenceEvidence {
   relatedReportsCount: number;
   locationMatchRadiusMeters: number;
   visualSimilarityPercentage: number;
-  timeClusteringScore: number; // 0-100
+  timeClusteringScore: number;
   citizenSignalSources: string[];
   lastCalculatedAgo: string;
 }
@@ -45,10 +46,10 @@ export interface AgingStep {
 }
 
 export interface SmartClosureData {
-  matchConfidence: number; // e.g. 96
-  distanceMeters: number; // e.g. 8
+  matchConfidence: number;
+  distanceMeters: number;
   isLikelyMatch: boolean;
-  visualMatchScore: number;
+  visualMatchScore: number | null;
   explanation: string;
   inspectedAt?: string;
 }
@@ -64,15 +65,16 @@ export interface Incident {
   longitude: number;
   reportedAt: string;
   waitingDays: number;
+
   status: IncidentStatus;
-  
+
   // SANKET Intelligence: Civic Risk (0-100)
   riskScore: number;
   riskLevel: RiskLevel;
-  severity: number; // 1-10
-  publicImpact: number; // 1-10
-  locationExposure: number; // 1-10
-  waitingScore: number; // 1-10
+  severity: number;
+  publicImpact: number;
+  locationExposure: number;
+  waitingScore: number;
   riskReasoning: string;
 
   // SANKET Intelligence: Civic Confidence (0-100%)
@@ -93,18 +95,27 @@ export interface Incident {
 
   // SANKET Intelligence: Smart Closure Match
   smartClosure?: SmartClosureData;
+
+  // Evidence
   beforeImageUrl: string;
   afterImageUrl?: string;
 
   description: string;
+
+  // Assignment
   assignedTeam?: string;
   assignedOfficer?: string;
   assignedAt?: string;
+
+  // Provenance
   sourceAttribution: string;
   lastUpdated: string;
 }
 
-export type Persona = 'municipal' | 'field_officer' | 'citizen';
+export type Persona =
+  | 'municipal'
+  | 'field_officer'
+  | 'citizen';
 
 export type MunicipalTab =
   | 'dashboard'
