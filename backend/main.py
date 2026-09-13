@@ -3,6 +3,7 @@ import io
 import json
 import math
 import os
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -15,6 +16,11 @@ from pydantic import BaseModel
 from supabase import Client, create_client
 
 from risk_engine import calculate_civic_risk
+from closure_engine import (
+    CLOSURE_ENGINE_VERSION,
+    MAX_CLOSURE_DISTANCE_METERS,
+    calculate_closure_match,
+)
 
 
 # ============================================================
@@ -29,13 +35,15 @@ SUPABASE_SERVICE_ROLE_KEY = os.getenv(
     "SUPABASE_SERVICE_ROLE_KEY"
 )
 
+SUPABASE_STORAGE_BUCKET = os.getenv(
+    "SUPABASE_STORAGE_BUCKET",
+    "sanket-evidence",
+)
+
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
-# OpenRouter automatically selects an available free model.
 FREE_VISION_MODEL = "openrouter/free"
 
-# Maximum distance for considering two reports
-# to be the same active incident.
 FUSION_DISTANCE_METERS = 75.0
 
 
@@ -45,7 +53,7 @@ FUSION_DISTANCE_METERS = 75.0
 
 app = FastAPI(
     title="SANKET CivicLens API",
-    version="1.3.0",
+    version="1.4.0",
 )
 
 
@@ -76,7 +84,6 @@ if not SUPABASE_SERVICE_ROLE_KEY:
         "WARNING: SUPABASE_SERVICE_ROLE_KEY "
         "is not configured."
     )
-
 
 supabase: Client | None = None
 
@@ -122,7 +129,6 @@ ALLOWED_ISSUE_TYPES = {
     "not_civic_issue",
 }
 
-
 ALLOWED_SEVERITIES = {
     "low",
     "medium",
@@ -135,8 +141,6 @@ ALLOWED_SEVERITIES = {
 # STATUS VALUES
 # ============================================================
 
-# These statuses mean the incident should no longer
-# absorb new citizen reports as the same active issue.
 CLOSED_STATUSES = {
     "closed",
     "resolved",
@@ -154,30 +158,11 @@ CIVIC_CONFIDENCE_MAX = 100
 CIVIC_CONFIDENCE_HIGH_THRESHOLD = 80
 CIVIC_CONFIDENCE_MEDIUM_THRESHOLD = 60
 
-# Maximum points for each confidence dimension.
 CONFIDENCE_VISUAL_MAX = 30
 CONFIDENCE_LOCATION_MAX = 20
 CONFIDENCE_CORROBORATION_MAX = 25
 CONFIDENCE_TEMPORAL_MAX = 10
 CONFIDENCE_METADATA_MAX = 15
-
-
-# ============================================================
-# CIVIC RISK
-# ============================================================
-
-# Civic Risk is calculated by the deterministic engine in
-# backend/risk_engine.py.
-#
-# Current v1 dimensions:
-#   Severity        35%
-#   Waiting/Age     25%
-#   Corroboration   25%
-#   Recurrence      15%
-#
-# No random values are used.
-# No traffic/exposure data is assumed.
-# No illustrative PPT numbers are used as real data.
 
 
 # ============================================================
@@ -249,6 +234,13 @@ def root():
         "civic_confidence_max": CIVIC_CONFIDENCE_MAX,
         "civic_risk": True,
         "civic_risk_engine": "1.0.0",
+        "smart_closure": True,
+        "smart_closure_engine": CLOSURE_ENGINE_VERSION,
+        "smart_closure_distance_meters":
+            MAX_CLOSURE_DISTANCE_METERS,
+        "storage_configured": bool(
+            supabase and SUPABASE_STORAGE_BUCKET
+        ),
     }
 
 
@@ -262,11 +254,17 @@ def health():
         "supabase_configured": bool(
             supabase
         ),
-        "vision_model": FREE_VISION_MODEL,
+        "storage_bucket":
+            SUPABASE_STORAGE_BUCKET,
+        "vision_model":
+            FREE_VISION_MODEL,
         "incident_fusion": True,
         "civic_confidence": True,
         "civic_risk": True,
         "civic_risk_engine": "1.0.0",
+        "smart_closure": True,
+        "smart_closure_engine":
+            CLOSURE_ENGINE_VERSION,
     }
 
 
@@ -298,6 +296,173 @@ def validate_image_bytes(
                 "Uploaded file is not a valid image."
             ),
         )
+
+
+# ============================================================
+# STORAGE
+# ============================================================
+
+def get_storage_public_url(
+    object_path: str,
+) -> str:
+    """
+    Return the public URL of an object in the
+    configured Supabase Storage bucket.
+    """
+
+    if not supabase:
+        raise HTTPException(
+            status_code=500,
+            detail="Supabase is not configured.",
+        )
+
+    if not SUPABASE_STORAGE_BUCKET:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "SUPABASE_STORAGE_BUCKET is not configured."
+            ),
+        )
+
+    try:
+        response = (
+            supabase
+            .storage
+            .from_(
+                SUPABASE_STORAGE_BUCKET
+            )
+            .get_public_url(
+                object_path
+            )
+        )
+
+        if isinstance(response, str):
+            return response
+
+        if isinstance(response, dict):
+            public_url = (
+                response.get("publicUrl")
+                or response.get("public_url")
+                or response.get("data", {}).get(
+                    "publicUrl"
+                )
+            )
+
+            if public_url:
+                return str(public_url)
+
+        public_url = getattr(
+            response,
+            "public_url",
+            None,
+        )
+
+        if public_url:
+            return str(public_url)
+
+        raise ValueError(
+            "Supabase did not return a public URL."
+        )
+
+    except Exception as exc:
+        print(
+            "SUPABASE STORAGE PUBLIC URL ERROR:"
+        )
+        print(str(exc))
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Could not create the public "
+                f"storage URL: {str(exc)}"
+            ),
+        )
+
+
+def upload_image_to_storage(
+    image_bytes: bytes,
+    content_type: str,
+    folder: str,
+    original_filename: str | None = None,
+) -> str:
+    """
+    Upload a real image to Supabase Storage.
+
+    Returns the public URL.
+
+    No image content is fabricated.
+    """
+
+    if not supabase:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Supabase is not configured."
+            ),
+        )
+
+    extension = "jpg"
+
+    if content_type == "image/png":
+        extension = "png"
+    elif content_type == "image/webp":
+        extension = "webp"
+    elif content_type == "image/gif":
+        extension = "gif"
+    elif content_type == "image/jpeg":
+        extension = "jpg"
+
+    safe_name = uuid.uuid4().hex
+
+    object_path = (
+        f"{folder}/{safe_name}.{extension}"
+    )
+
+    try:
+        (
+            supabase
+            .storage
+            .from_(
+                SUPABASE_STORAGE_BUCKET
+            )
+            .upload(
+                object_path,
+                image_bytes,
+                {
+                    "content-type":
+                        content_type,
+                    "upsert":
+                        "false",
+                },
+            )
+        )
+
+    except Exception as exc:
+        print(
+            "===================================="
+        )
+
+        print(
+            "SUPABASE STORAGE UPLOAD ERROR:"
+        )
+
+        print(str(exc))
+
+        print(
+            "===================================="
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Could not store uploaded image: "
+                f"{str(exc)}"
+            ),
+        )
+
+    return get_storage_public_url(
+        object_path
+    )
 
 
 # ============================================================
@@ -410,7 +575,6 @@ def validate_ai_analysis(
             visible_evidence,
     }
 
-    # Preserve the citizen-confirmed category.
     if "confirmed_category" in data:
         result["confirmed_category"] = str(
             data["confirmed_category"]
@@ -647,7 +811,8 @@ def get_issue_title(
         "streetlight": "Broken Streetlight",
         "waste": "Waste / Sanitation Issue",
         "other": "Civic Issue",
-        "not_civic_issue": "Unclassified Image",
+        "not_civic_issue":
+            "Unclassified Image",
     }
 
     return titles.get(
@@ -666,13 +831,6 @@ def calculate_distance_meters(
     latitude_2: float,
     longitude_2: float,
 ) -> float:
-
-    """
-    Calculate distance between two GPS coordinates
-    using the Haversine formula.
-
-    Returns distance in meters.
-    """
 
     earth_radius_meters = 6_371_000.0
 
@@ -700,6 +858,11 @@ def calculate_distance_meters(
         * math.sin(delta_lon / 2) ** 2
     )
 
+    a = max(
+        0.0,
+        min(1.0, a),
+    )
+
     c = 2 * math.atan2(
         math.sqrt(a),
         math.sqrt(1 - a),
@@ -716,18 +879,6 @@ def calculate_visual_evidence_score(
     ai_confidence: float,
     visible_evidence: list[str],
 ) -> int:
-
-    """
-    Visual evidence component.
-
-    Maximum: 30 points.
-
-    AI model confidence contributes up to 20 points.
-    Concrete visible evidence contributes up to 10.
-
-    AI confidence is therefore only an input signal.
-    It is NOT Civic Confidence itself.
-    """
 
     try:
         confidence = float(
@@ -777,21 +928,6 @@ def calculate_location_quality_score(
     accuracy_meters: float | None,
 ) -> int:
 
-    """
-    Location quality component.
-
-    Maximum: 20 points.
-
-    No GPS:
-        0
-
-    GPS accuracy:
-        >100m       -> 5
-        50-100m     -> 10
-        20-50m      -> 15
-        <=20m       -> 20
-    """
-
     if (
         latitude is None
         or longitude is None
@@ -831,17 +967,6 @@ def calculate_corroboration_score(
     report_count: int,
 ) -> int:
 
-    """
-    Corroboration component.
-
-    Maximum: 25 points.
-
-    1 report -> 0
-    2 reports -> 10
-    3 reports -> 17
-    4+ reports -> 25
-    """
-
     try:
         count = int(
             report_count
@@ -873,23 +998,6 @@ def calculate_corroboration_score(
 def calculate_temporal_consistency_score(
     report_count: int,
 ) -> int:
-
-    """
-    Temporal consistency component.
-
-    This MVP uses the number of corroborating
-    reports as the available temporal signal.
-
-    Maximum: 10.
-
-    1 report -> 5
-    2 reports -> 7
-    3+ reports -> 10
-
-    Future Civic Memory work can make this
-    more sophisticated using actual historical
-    timestamps and recurrence windows.
-    """
 
     try:
         count = int(
@@ -925,23 +1033,6 @@ def calculate_metadata_completeness_score(
     sector: str | None,
 ) -> int:
 
-    """
-    Metadata completeness component.
-
-    Maximum: 15.
-
-    Category       -> 3
-    Description    -> 3
-    GPS            -> 3
-    GPS accuracy   -> 2
-    Sector         -> 2
-    Image          -> 2
-
-    The image receives its points because /reports
-    requires a validated image before this function
-    is called.
-    """
-
     score = 0
 
     if (
@@ -971,7 +1062,6 @@ def calculate_metadata_completeness_score(
     ):
         score += 2
 
-    # Validated image.
     score += 2
 
     return min(
@@ -992,22 +1082,6 @@ def calculate_civic_confidence(
     description: str | None,
     sector: str | None,
 ) -> dict[str, Any]:
-
-    """
-    Main deterministic Civic Confidence engine.
-
-    This is deliberately separate from AI/model confidence.
-
-    Maximum:
-        100 points.
-
-    Components:
-        Visual evidence       30
-        Location quality      20
-        Corroboration         25
-        Temporal consistency  10
-        Metadata completeness 15
-    """
 
     visual_evidence = (
         calculate_visual_evidence_score(
@@ -1109,18 +1183,12 @@ def calculate_civic_confidence(
 
 
 # ============================================================
-# CIVIC RISK HELPERS
+# CIVIC RISK
 # ============================================================
 
 def calculate_incident_risk(
     incident: dict[str, Any],
 ) -> dict[str, Any]:
-    """
-    Run the deterministic Civic Risk engine against
-    one incident.
-
-    All inputs come from the incident/database record.
-    """
 
     try:
         result = calculate_civic_risk(
@@ -1157,14 +1225,6 @@ def calculate_incident_risk(
 def attach_risk_to_incident(
     incident: dict[str, Any],
 ) -> dict[str, Any]:
-    """
-    Add calculated Civic Risk fields to an incident
-    without requiring a separate database column for
-    every derived value.
-
-    risk_score is also persisted in Supabase by the
-    report/incident update paths.
-    """
 
     enriched = dict(incident)
 
@@ -1219,16 +1279,6 @@ def find_matching_incident(
     latitude: float | None,
     longitude: float | None,
 ) -> dict[str, Any] | None:
-
-    """
-    Find an existing active incident that is close enough
-    and belongs to the same civic issue category.
-
-    Fusion requires GPS coordinates.
-
-    If the new report has no coordinates, a new incident
-    is created instead of guessing.
-    """
 
     if not supabase:
         raise HTTPException(
@@ -1423,6 +1473,17 @@ async def create_report(
     )
 
     # --------------------------------------------------------
+    # Store citizen evidence image
+    # --------------------------------------------------------
+
+    image_url = upload_image_to_storage(
+        image_bytes=image_bytes,
+        content_type=file.content_type,
+        folder="citizen-reports",
+        original_filename=file.filename,
+    )
+
+    # --------------------------------------------------------
     # Validate GPS accuracy
     # --------------------------------------------------------
 
@@ -1581,7 +1642,7 @@ async def create_report(
     )
 
     # ========================================================
-    # CASE A: EXISTING INCIDENT FOUND
+    # CASE A: EXISTING INCIDENT
     # ========================================================
 
     if matching_incident:
@@ -1601,10 +1662,6 @@ async def create_report(
         new_report_count = (
             old_report_count + 1
         )
-
-        # ----------------------------------------------------
-        # Recalculate Civic Confidence
-        # ----------------------------------------------------
 
         civic_confidence = (
             calculate_civic_confidence(
@@ -1642,10 +1699,6 @@ async def create_report(
             )
         )
 
-        # ----------------------------------------------------
-        # Recalculate Civic Risk
-        # ----------------------------------------------------
-
         risk_input = dict(
             matching_incident
         )
@@ -1674,18 +1727,16 @@ async def create_report(
         update_data = {
             "report_count":
                 new_report_count,
-
             "confidence_score":
                 civic_confidence[
                     "score"
                 ],
-
             "risk_score":
                 civic_risk[
                     "score"
                 ],
-
-            "updated_at": now,
+            "updated_at":
+                now,
         }
 
         try:
@@ -1706,19 +1757,11 @@ async def create_report(
         except Exception as exc:
 
             print(
-                "===================================="
-            )
-
-            print(
                 "SUPABASE INCIDENT FUSION "
                 "UPDATE ERROR:"
             )
 
             print(str(exc))
-
-            print(
-                "===================================="
-            )
 
             raise HTTPException(
                 status_code=500,
@@ -1742,14 +1785,9 @@ async def create_report(
             incident_response.data[0]
         )
 
-        # Add calculated risk fields to response.
         updated_incident = attach_risk_to_incident(
             updated_incident
         )
-
-        # ----------------------------------------------------
-        # Add new citizen report
-        # ----------------------------------------------------
 
         clean_citizen_id = (
             citizen_id.strip()
@@ -1766,7 +1804,7 @@ async def create_report(
             "description":
                 description.strip(),
             "image_url":
-                None,
+                image_url,
         }
 
         try:
@@ -1783,18 +1821,10 @@ async def create_report(
         except Exception as exc:
 
             print(
-                "===================================="
-            )
-
-            print(
                 "SUPABASE FUSED REPORT ERROR:"
             )
 
             print(str(exc))
-
-            print(
-                "===================================="
-            )
 
             raise HTTPException(
                 status_code=500,
@@ -1854,7 +1884,7 @@ async def create_report(
         }
 
     # ========================================================
-    # CASE B: NO MATCH → CREATE NEW INCIDENT
+    # CASE B: CREATE NEW INCIDENT
     # ========================================================
 
     now = datetime.now(
@@ -1877,32 +1907,19 @@ async def create_report(
         )
     )
 
-    # --------------------------------------------------------
-    # Calculate Civic Risk BEFORE creating the incident.
-    #
-    # created_at is supplied explicitly so the deterministic
-    # age calculation starts from the actual creation time.
-    # --------------------------------------------------------
-
     risk_input = {
         "issue_type":
             issue_type,
-
         "severity":
             severity,
-
         "report_count":
             1,
-
         "recurrence_count":
             0,
-
         "created_at":
             now,
-
         "updated_at":
             now,
-
         "status":
             "reported",
     }
@@ -1942,15 +1959,11 @@ async def create_report(
         "severity":
             severity,
 
-        # IMPORTANT:
-        # This is Civic Confidence,
-        # NOT raw AI confidence.
         "confidence_score":
             civic_confidence[
                 "score"
             ],
 
-        # Deterministic Civic Risk.
         "risk_score":
             civic_risk[
                 "score"
@@ -1983,18 +1996,10 @@ async def create_report(
     except Exception as exc:
 
         print(
-            "===================================="
-        )
-
-        print(
             "SUPABASE INCIDENT ERROR:"
         )
 
         print(str(exc))
-
-        print(
-            "===================================="
-        )
 
         raise HTTPException(
             status_code=500,
@@ -2029,14 +2034,9 @@ async def create_report(
             ),
         )
 
-    # Add calculated risk metadata to response.
     incident = attach_risk_to_incident(
         incident
     )
-
-    # --------------------------------------------------------
-    # Create first report
-    # --------------------------------------------------------
 
     clean_citizen_id = (
         citizen_id.strip()
@@ -2056,7 +2056,7 @@ async def create_report(
             description.strip(),
 
         "image_url":
-            None,
+            image_url,
     }
 
     try:
@@ -2073,18 +2073,10 @@ async def create_report(
     except Exception as exc:
 
         print(
-            "===================================="
-        )
-
-        print(
             "SUPABASE REPORT ERROR:"
         )
 
         print(str(exc))
-
-        print(
-            "===================================="
-        )
 
         raise HTTPException(
             status_code=500,
@@ -2140,6 +2132,101 @@ async def create_report(
 
 
 # ============================================================
+# INCIDENT IMAGE ENRICHMENT
+# ============================================================
+
+def attach_before_image(
+    incident: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Attach the first available citizen report image
+    as the incident's before image.
+
+    This is a real image from the reports table.
+    """
+
+    enriched = dict(
+        incident
+    )
+
+    incident_id = enriched.get(
+        "incident_id"
+    )
+
+    if not incident_id or not supabase:
+        enriched["before_image_url"] = None
+        return enriched
+
+    try:
+        response = (
+            supabase
+            .table("reports")
+            .select(
+                "image_url,submitted_at"
+            )
+            .eq(
+                "incident_id",
+                incident_id,
+            )
+            .not_.is_(
+                "image_url",
+                "null",
+            )
+            .order(
+                "submitted_at",
+                desc=False,
+            )
+            .limit(1)
+            .execute()
+        )
+
+        reports = response.data or []
+
+        if reports:
+            enriched[
+                "before_image_url"
+            ] = reports[0].get(
+                "image_url"
+            )
+        else:
+            enriched[
+                "before_image_url"
+            ] = None
+
+    except Exception as exc:
+
+        print(
+            "BEFORE IMAGE LOOKUP ERROR:"
+        )
+
+        print(str(exc))
+
+        enriched[
+            "before_image_url"
+        ] = None
+
+    return enriched
+
+
+def enrich_incident(
+    incident: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Apply all deterministic API enrichments.
+    """
+
+    enriched = attach_risk_to_incident(
+        incident
+    )
+
+    enriched = attach_before_image(
+        enriched
+    )
+
+    return enriched
+
+
+# ============================================================
 # GET ALL INCIDENTS
 # ============================================================
 
@@ -2171,18 +2258,13 @@ def get_incidents():
             response.data or []
         )
 
-        # ----------------------------------------------------
-        # Calculate Civic Risk from current database values.
-        #
-        # This ensures the API does not blindly trust an old
-        # stored risk_score if incident data has changed.
-        # ----------------------------------------------------
-
         enriched_incidents = []
 
         for incident in incidents:
+
             try:
-                enriched = attach_risk_to_incident(
+
+                enriched = enrich_incident(
                     incident
                 )
 
@@ -2194,15 +2276,16 @@ def get_incidents():
                 raise
 
             except Exception as exc:
+
                 print(
-                    "CIVIC RISK INCIDENT "
-                    "ENRICHMENT ERROR:"
+                    "INCIDENT ENRICHMENT ERROR:"
                 )
+
                 print(str(exc))
 
-                # Keep the real incident available rather
-                # than losing the entire dashboard response.
-                fallback = dict(incident)
+                fallback = dict(
+                    incident
+                )
 
                 fallback.setdefault(
                     "risk_score",
@@ -2217,6 +2300,11 @@ def get_incidents():
                 fallback.setdefault(
                     "risk_reasoning",
                     "Risk analysis unavailable.",
+                )
+
+                fallback.setdefault(
+                    "before_image_url",
+                    None,
                 )
 
                 enriched_incidents.append(
@@ -2237,18 +2325,10 @@ def get_incidents():
     except Exception as exc:
 
         print(
-            "===================================="
-        )
-
-        print(
             "SUPABASE INCIDENTS ERROR:"
         )
 
         print(str(exc))
-
-        print(
-            "===================================="
-        )
 
         raise HTTPException(
             status_code=500,
@@ -2295,18 +2375,10 @@ def get_incident(
     except Exception as exc:
 
         print(
-            "===================================="
-        )
-
-        print(
             "SUPABASE INCIDENT LOOKUP ERROR:"
         )
 
         print(str(exc))
-
-        print(
-            "===================================="
-        )
 
         raise HTTPException(
             status_code=500,
@@ -2325,9 +2397,7 @@ def get_incident(
 
     incident = response.data[0]
 
-    # Calculate current deterministic risk
-    # before returning the incident.
-    incident = attach_risk_to_incident(
+    incident = enrich_incident(
         incident
     )
 
@@ -2395,19 +2465,11 @@ def assign_incident(
     except Exception as exc:
 
         print(
-            "===================================="
-        )
-
-        print(
             "SUPABASE INCIDENT ASSIGNMENT "
             "ERROR:"
         )
 
         print(str(exc))
-
-        print(
-            "===================================="
-        )
 
         raise HTTPException(
             status_code=500,
@@ -2425,9 +2487,7 @@ def assign_incident(
 
     incident = response.data[0]
 
-    # Return the incident with current Civic Risk
-    # after assignment.
-    incident = attach_risk_to_incident(
+    incident = enrich_incident(
         incident
     )
 
@@ -2435,4 +2495,471 @@ def assign_incident(
         "success": True,
         "incident":
             incident,
+    }
+
+
+# ============================================================
+# SMART CLOSURE
+# ============================================================
+
+@app.post(
+    "/incidents/{incident_id}/closure"
+)
+async def submit_closure_evidence(
+    incident_id: str,
+    photo: UploadFile = File(...),
+    latitude: float = Form(...),
+    longitude: float = Form(...),
+    accuracy_meters: float | None = Form(None),
+):
+    """
+    Submit real field repair evidence.
+
+    Workflow:
+
+        1. Validate repair photo.
+        2. Validate field GPS.
+        3. Load original incident.
+        4. Upload repair photo to Supabase Storage.
+        5. Calculate GPS distance.
+        6. Run deterministic Smart Closure engine.
+        7. Automatically resolve only if:
+              - repair photo exists
+              - original GPS exists
+              - field GPS exists
+              - distance <= 50m
+        8. Persist closure evidence.
+    """
+
+    if not supabase:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Supabase is not configured."
+            ),
+        )
+
+    # --------------------------------------------------------
+    # Validate photo
+    # --------------------------------------------------------
+
+    if not photo.content_type:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Repair photo type could not "
+                "be determined."
+            ),
+        )
+
+    if not photo.content_type.startswith(
+        "image/"
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Only image files are allowed "
+                "for closure evidence."
+            ),
+        )
+
+    image_bytes = await photo.read()
+
+    validate_image_bytes(
+        image_bytes
+    )
+
+    # --------------------------------------------------------
+    # Validate field GPS
+    # --------------------------------------------------------
+
+    try:
+        latitude = float(
+            latitude
+        )
+
+        longitude = float(
+            longitude
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Valid numeric latitude and "
+                "longitude are required."
+            ),
+        )
+
+    if not (
+        -90.0
+        <= latitude
+        <= 90.0
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "latitude must be between "
+                "-90 and 90."
+            ),
+        )
+
+    if not (
+        -180.0
+        <= longitude
+        <= 180.0
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "longitude must be between "
+                "-180 and 180."
+            ),
+        )
+
+    if accuracy_meters is not None:
+
+        try:
+            accuracy_meters = float(
+                accuracy_meters
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "accuracy_meters must be "
+                    "a valid number."
+                ),
+            )
+
+        if accuracy_meters < 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "accuracy_meters cannot "
+                    "be negative."
+                ),
+            )
+
+    # --------------------------------------------------------
+    # Load original incident
+    # --------------------------------------------------------
+
+    try:
+
+        incident_response = (
+            supabase
+            .table("incidents")
+            .select("*")
+            .eq(
+                "incident_id",
+                incident_id,
+            )
+            .limit(1)
+            .execute()
+        )
+
+    except Exception as exc:
+
+        print(
+            "SMART CLOSURE INCIDENT LOOKUP ERROR:"
+        )
+
+        print(str(exc))
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Could not retrieve incident "
+                f"for closure: {str(exc)}"
+            ),
+        )
+
+    if not incident_response.data:
+        raise HTTPException(
+            status_code=404,
+            detail="Incident not found.",
+        )
+
+    incident = (
+        incident_response.data[0]
+    )
+
+    # --------------------------------------------------------
+    # Do not close an already closed incident
+    # --------------------------------------------------------
+
+    current_status = str(
+        incident.get(
+            "status",
+            "reported",
+        )
+    ).lower().strip()
+
+    if current_status in CLOSED_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This incident is already "
+                f"{current_status}."
+            ),
+        )
+
+    # --------------------------------------------------------
+    # Store actual repair image
+    # --------------------------------------------------------
+
+    closure_image_url = (
+        upload_image_to_storage(
+            image_bytes=image_bytes,
+            content_type=photo.content_type,
+            folder="closure-evidence",
+            original_filename=photo.filename,
+        )
+    )
+
+    # --------------------------------------------------------
+    # Run deterministic closure engine
+    # --------------------------------------------------------
+
+    closure_evidence = {
+        "latitude":
+            latitude,
+        "longitude":
+            longitude,
+        "accuracy_meters":
+            accuracy_meters,
+        "photo_url":
+            closure_image_url,
+    }
+
+    closure_result = (
+        calculate_closure_match(
+            incident=incident,
+            closure_evidence=
+                closure_evidence,
+        )
+    )
+
+    distance_meters = (
+        closure_result.get(
+            "distance_meters"
+        )
+    )
+
+    match_score = (
+        closure_result.get(
+            "match_score",
+            0,
+        )
+    )
+
+    match_status = (
+        closure_result.get(
+            "match_status",
+            "unavailable",
+        )
+    )
+
+    explanation = (
+        closure_result.get(
+            "explanation",
+            "",
+        )
+    )
+
+    automatic_closure_allowed = (
+        closure_result.get(
+            "automatic_closure_allowed",
+            False,
+        )
+    )
+
+    now = datetime.now(
+        timezone.utc
+    ).isoformat()
+
+    # --------------------------------------------------------
+    # Determine status
+    # --------------------------------------------------------
+
+    if automatic_closure_allowed:
+        new_status = "resolved"
+        resolved_at = now
+
+    else:
+        new_status = current_status
+        resolved_at = incident.get(
+            "resolved_at"
+        )
+
+    # --------------------------------------------------------
+    # Persist closure evidence
+    # --------------------------------------------------------
+
+    update_data = {
+        "closure_image_url":
+            closure_image_url,
+
+        "closure_latitude":
+            latitude,
+
+        "closure_longitude":
+            longitude,
+
+        "closure_accuracy_meters":
+            accuracy_meters,
+
+        "closure_distance_meters":
+            distance_meters,
+
+        "closure_match_score":
+            match_score,
+
+        "closure_match_status":
+            match_status,
+
+        "closure_explanation":
+            explanation,
+
+        "closure_submitted_at":
+            now,
+
+        "closure_engine_version":
+            CLOSURE_ENGINE_VERSION,
+
+        "updated_at":
+            now,
+    }
+
+    if automatic_closure_allowed:
+
+        update_data[
+            "status"
+        ] = "resolved"
+
+        update_data[
+            "resolved_at"
+        ] = resolved_at
+
+    try:
+
+        update_response = (
+            supabase
+            .table("incidents")
+            .update(
+                update_data
+            )
+            .eq(
+                "incident_id",
+                incident_id,
+            )
+            .execute()
+        )
+
+    except Exception as exc:
+
+        print(
+            "===================================="
+        )
+
+        print(
+            "SMART CLOSURE UPDATE ERROR:"
+        )
+
+        print(str(exc))
+
+        print(
+            "===================================="
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Closure evidence was uploaded "
+                "but incident metadata could "
+                "not be updated: "
+                f"{str(exc)}"
+            ),
+        )
+
+    if not update_response.data:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Closure evidence could not "
+                "be attached to the incident."
+            ),
+        )
+
+    updated_incident = (
+        update_response.data[0]
+    )
+
+    updated_incident = enrich_incident(
+        updated_incident
+    )
+
+    return {
+        "success": True,
+
+        "incident_id":
+            incident_id,
+
+        "automatic_closure_allowed":
+            automatic_closure_allowed,
+
+        "status":
+            updated_incident.get(
+                "status"
+            ),
+
+        "distance_meters":
+            distance_meters,
+
+        "match_score":
+            match_score,
+
+        "match_status":
+            match_status,
+
+        "explanation":
+            explanation,
+
+        "closure_engine_version":
+            CLOSURE_ENGINE_VERSION,
+
+        "closure_image_url":
+            closure_image_url,
+
+        "closure_latitude":
+            latitude,
+
+        "closure_longitude":
+            longitude,
+
+        "closure_accuracy_meters":
+            accuracy_meters,
+
+        "checks":
+            closure_result.get(
+                "checks",
+                {},
+            ),
+
+        "recommendation":
+            closure_result.get(
+                "recommendation",
+                "needs_review",
+            ),
+
+        "incident":
+            updated_incident,
     }

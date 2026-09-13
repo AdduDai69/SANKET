@@ -56,6 +56,11 @@ export const CITIZEN_STATUS: Record<IncidentStatus, CitizenStatusInfo> = {
     tone: 'green',
     explanation: 'This issue has been marked as resolved. Thank you for your report!',
   },
+  closed: {
+  label: 'Closed',
+  tone: 'slate',
+  explanation: 'This civic issue has been closed after resolution or verification.',
+},
 };
 
 /** Human label for an issue category. */
