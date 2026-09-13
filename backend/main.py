@@ -14,6 +14,8 @@ from PIL import Image
 from pydantic import BaseModel
 from supabase import Client, create_client
 
+from risk_engine import calculate_civic_risk
+
 
 # ============================================================
 # ENVIRONMENT
@@ -43,7 +45,7 @@ FUSION_DISTANCE_METERS = 75.0
 
 app = FastAPI(
     title="SANKET CivicLens API",
-    version="1.2.0",
+    version="1.3.0",
 )
 
 
@@ -161,6 +163,24 @@ CONFIDENCE_METADATA_MAX = 15
 
 
 # ============================================================
+# CIVIC RISK
+# ============================================================
+
+# Civic Risk is calculated by the deterministic engine in
+# backend/risk_engine.py.
+#
+# Current v1 dimensions:
+#   Severity        35%
+#   Waiting/Age     25%
+#   Corroboration   25%
+#   Recurrence      15%
+#
+# No random values are used.
+# No traffic/exposure data is assumed.
+# No illustrative PPT numbers are used as real data.
+
+
+# ============================================================
 # VISION PROMPT
 # ============================================================
 
@@ -227,6 +247,8 @@ def root():
         "fusion_distance_meters": FUSION_DISTANCE_METERS,
         "civic_confidence": True,
         "civic_confidence_max": CIVIC_CONFIDENCE_MAX,
+        "civic_risk": True,
+        "civic_risk_engine": "1.0.0",
     }
 
 
@@ -243,6 +265,8 @@ def health():
         "vision_model": FREE_VISION_MODEL,
         "incident_fusion": True,
         "civic_confidence": True,
+        "civic_risk": True,
+        "civic_risk_engine": "1.0.0",
     }
 
 
@@ -1085,6 +1109,108 @@ def calculate_civic_confidence(
 
 
 # ============================================================
+# CIVIC RISK HELPERS
+# ============================================================
+
+def calculate_incident_risk(
+    incident: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Run the deterministic Civic Risk engine against
+    one incident.
+
+    All inputs come from the incident/database record.
+    """
+
+    try:
+        result = calculate_civic_risk(
+            incident
+        )
+
+    except Exception as exc:
+
+        print(
+            "===================================="
+        )
+
+        print(
+            "CIVIC RISK ENGINE ERROR:"
+        )
+
+        print(str(exc))
+
+        print(
+            "===================================="
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Could not calculate civic risk: "
+                f"{str(exc)}"
+            ),
+        )
+
+    return result
+
+
+def attach_risk_to_incident(
+    incident: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Add calculated Civic Risk fields to an incident
+    without requiring a separate database column for
+    every derived value.
+
+    risk_score is also persisted in Supabase by the
+    report/incident update paths.
+    """
+
+    enriched = dict(incident)
+
+    risk = calculate_incident_risk(
+        enriched
+    )
+
+    enriched["risk_score"] = risk.get(
+        "score",
+        0,
+    )
+
+    enriched["risk_level"] = risk.get(
+        "level",
+        "low",
+    )
+
+    enriched["risk_reasoning"] = risk.get(
+        "reasoning",
+        "",
+    )
+
+    enriched["risk_components"] = risk.get(
+        "components",
+        {},
+    )
+
+    enriched["risk_weights"] = risk.get(
+        "weights",
+        {},
+    )
+
+    enriched["risk_waiting_days"] = risk.get(
+        "waiting_days",
+        0,
+    )
+
+    enriched["risk_engine_version"] = risk.get(
+        "engine_version",
+        "1.0.0",
+    )
+
+    return enriched
+
+
+# ============================================================
 # INCIDENT FUSION
 # ============================================================
 
@@ -1516,6 +1642,31 @@ async def create_report(
             )
         )
 
+        # ----------------------------------------------------
+        # Recalculate Civic Risk
+        # ----------------------------------------------------
+
+        risk_input = dict(
+            matching_incident
+        )
+
+        risk_input[
+            "report_count"
+        ] = new_report_count
+
+        risk_input[
+            "severity"
+        ] = (
+            matching_incident.get(
+                "severity"
+            )
+            or severity
+        )
+
+        civic_risk = calculate_incident_risk(
+            risk_input
+        )
+
         now = datetime.now(
             timezone.utc
         ).isoformat()
@@ -1523,10 +1674,17 @@ async def create_report(
         update_data = {
             "report_count":
                 new_report_count,
+
             "confidence_score":
                 civic_confidence[
                     "score"
                 ],
+
+            "risk_score":
+                civic_risk[
+                    "score"
+                ],
+
             "updated_at": now,
         }
 
@@ -1582,6 +1740,11 @@ async def create_report(
 
         updated_incident = (
             incident_response.data[0]
+        )
+
+        # Add calculated risk fields to response.
+        updated_incident = attach_risk_to_incident(
+            updated_incident
         )
 
         # ----------------------------------------------------
@@ -1671,6 +1834,9 @@ async def create_report(
             "civic_confidence":
                 civic_confidence,
 
+            "civic_risk":
+                civic_risk,
+
             "incident_id":
                 incident_id,
 
@@ -1691,6 +1857,10 @@ async def create_report(
     # CASE B: NO MATCH → CREATE NEW INCIDENT
     # ========================================================
 
+    now = datetime.now(
+        timezone.utc
+    ).isoformat()
+
     civic_confidence = (
         calculate_civic_confidence(
             ai_confidence=ai_confidence,
@@ -1707,7 +1877,39 @@ async def create_report(
         )
     )
 
-    risk_score = 0
+    # --------------------------------------------------------
+    # Calculate Civic Risk BEFORE creating the incident.
+    #
+    # created_at is supplied explicitly so the deterministic
+    # age calculation starts from the actual creation time.
+    # --------------------------------------------------------
+
+    risk_input = {
+        "issue_type":
+            issue_type,
+
+        "severity":
+            severity,
+
+        "report_count":
+            1,
+
+        "recurrence_count":
+            0,
+
+        "created_at":
+            now,
+
+        "updated_at":
+            now,
+
+        "status":
+            "reported",
+    }
+
+    civic_risk = calculate_incident_risk(
+        risk_input
+    )
 
     incident_data = {
         "issue_type":
@@ -1741,21 +1943,30 @@ async def create_report(
             severity,
 
         # IMPORTANT:
-        # This is now Civic Confidence,
+        # This is Civic Confidence,
         # NOT raw AI confidence.
         "confidence_score":
             civic_confidence[
                 "score"
             ],
 
+        # Deterministic Civic Risk.
         "risk_score":
-            risk_score,
+            civic_risk[
+                "score"
+            ],
 
         "report_count":
             1,
 
         "recurrence_count":
             0,
+
+        "created_at":
+            now,
+
+        "updated_at":
+            now,
     }
 
     try:
@@ -1817,6 +2028,11 @@ async def create_report(
                 "incident_id was not returned."
             ),
         )
+
+    # Add calculated risk metadata to response.
+    incident = attach_risk_to_incident(
+        incident
+    )
 
     # --------------------------------------------------------
     # Create first report
@@ -1903,6 +2119,9 @@ async def create_report(
         "civic_confidence":
             civic_confidence,
 
+        "civic_risk":
+            civic_risk,
+
         "incident_id":
             incident_id,
 
@@ -1952,13 +2171,68 @@ def get_incidents():
             response.data or []
         )
 
+        # ----------------------------------------------------
+        # Calculate Civic Risk from current database values.
+        #
+        # This ensures the API does not blindly trust an old
+        # stored risk_score if incident data has changed.
+        # ----------------------------------------------------
+
+        enriched_incidents = []
+
+        for incident in incidents:
+            try:
+                enriched = attach_risk_to_incident(
+                    incident
+                )
+
+                enriched_incidents.append(
+                    enriched
+                )
+
+            except HTTPException:
+                raise
+
+            except Exception as exc:
+                print(
+                    "CIVIC RISK INCIDENT "
+                    "ENRICHMENT ERROR:"
+                )
+                print(str(exc))
+
+                # Keep the real incident available rather
+                # than losing the entire dashboard response.
+                fallback = dict(incident)
+
+                fallback.setdefault(
+                    "risk_score",
+                    0,
+                )
+
+                fallback.setdefault(
+                    "risk_level",
+                    "low",
+                )
+
+                fallback.setdefault(
+                    "risk_reasoning",
+                    "Risk analysis unavailable.",
+                )
+
+                enriched_incidents.append(
+                    fallback
+                )
+
         return {
             "count": len(
-                incidents
+                enriched_incidents
             ),
             "incidents":
-                incidents,
+                enriched_incidents,
         }
+
+    except HTTPException:
+        raise
 
     except Exception as exc:
 
@@ -2049,7 +2323,15 @@ def get_incident(
             detail="Incident not found.",
         )
 
-    return response.data[0]
+    incident = response.data[0]
+
+    # Calculate current deterministic risk
+    # before returning the incident.
+    incident = attach_risk_to_incident(
+        incident
+    )
+
+    return incident
 
 
 # ============================================================
@@ -2141,8 +2423,16 @@ def assign_incident(
             detail="Incident not found.",
         )
 
+    incident = response.data[0]
+
+    # Return the incident with current Civic Risk
+    # after assignment.
+    incident = attach_risk_to_incident(
+        incident
+    )
+
     return {
         "success": True,
         "incident":
-            response.data[0],
+            incident,
     }
