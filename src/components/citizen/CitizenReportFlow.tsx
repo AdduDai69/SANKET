@@ -267,6 +267,107 @@ export const CitizenReportFlow: React.FC<{
     useState<string | null>(null);
 
   /*
+   * Ground truth coordinates extracted from the uploaded photo evidence.
+   */
+  const [actualPhotoCoords, setActualPhotoCoords] =
+    useState<{ latitude: number; longitude: number; sector?: string } | null>(null);
+
+  /*
+   * Real-time Location Verification & Matching Percentage Engine.
+   * Compares the candidate/changed location against the actual photo evidence.
+   * Runs deterministically with ZERO external AI credits consumed.
+   */
+  const locationMatch = React.useMemo(() => {
+    // 1. Photo has authentic EXIF GPS coordinates
+    if (actualPhotoCoords?.latitude != null && actualPhotoCoords?.longitude != null) {
+      if (!incidentCoords) {
+        return {
+          matchPercentage: 0,
+          isCorrect: false,
+          status: 'REJECTED' as const,
+          distanceMeters: null,
+          reason: 'Unrecognized location. Could not resolve coordinates for this area.',
+        };
+      }
+
+      const distMeters =
+        computeDistanceKm(
+          actualPhotoCoords.latitude,
+          actualPhotoCoords.longitude,
+          incidentCoords.latitude,
+          incidentCoords.longitude
+        ) * 1000;
+
+      if (distMeters <= 100) {
+        const pct = Math.round(100 - (distMeters / 100) * 5);
+        return {
+          matchPercentage: pct,
+          isCorrect: true,
+          status: 'VERIFIED' as const,
+          distanceMeters: Math.round(distMeters),
+          reason: `Location verified: matches photo evidence within ${Math.round(distMeters)}m.`,
+        };
+      } else if (distMeters <= 500) {
+        const pct = Math.round(95 - ((distMeters - 100) / 400) * 15);
+        return {
+          matchPercentage: pct,
+          isCorrect: true,
+          status: 'VERIFIED' as const,
+          distanceMeters: Math.round(distMeters),
+          reason: `Location matches photo neighborhood (${Math.round(distMeters)}m away).`,
+        };
+      } else if (distMeters <= 1000) {
+        const pct = Math.round(80 - ((distMeters - 500) / 500) * 20);
+        return {
+          matchPercentage: pct,
+          isCorrect: true,
+          status: 'VERIFIED' as const,
+          distanceMeters: Math.round(distMeters),
+          reason: `Location within sector vicinity (${Math.round(distMeters)}m away).`,
+        };
+      } else if (distMeters <= 1500) {
+        const pct = Math.round(60 - ((distMeters - 1000) / 500) * 15);
+        const isOk = pct >= 50;
+        return {
+          matchPercentage: pct,
+          isCorrect: isOk,
+          status: isOk ? ('UNDER_CONSIDERATION' as const) : ('REJECTED' as const),
+          distanceMeters: Math.round(distMeters),
+          reason: `Location is ${Math.round(distMeters)}m away from photo evidence.`,
+        };
+      } else {
+        const pct = Math.max(0, Math.round(45 - ((distMeters - 1500) / 4000) * 45));
+        return {
+          matchPercentage: pct,
+          isCorrect: false,
+          status: 'REJECTED' as const,
+          distanceMeters: Math.round(distMeters),
+          reason: `Location mismatch: ${(distMeters / 1000).toFixed(1)} km away from actual photo evidence.`,
+        };
+      }
+    }
+
+    // 2. Photo has NO EXIF GPS: Validate declared municipal location
+    if (!sector || sector.trim().length < 2 || !incidentCoords) {
+      return {
+        matchPercentage: 0,
+        isCorrect: false,
+        status: 'REJECTED' as const,
+        distanceMeters: null,
+        reason: 'Please specify the area/sector where this issue occurred.',
+      };
+    }
+
+    return {
+      matchPercentage: 70,
+      isCorrect: true,
+      status: 'UNDER_CONSIDERATION' as const,
+      distanceMeters: null,
+      reason: 'Valid citizen-declared location in municipal area (no photo GPS to cross-reference).',
+    };
+  }, [actualPhotoCoords, incidentCoords, sector]);
+
+  /*
    * Category detected by AI.
    *
    * The citizen can change it during confirmation.
@@ -849,6 +950,11 @@ export const CitizenReportFlow: React.FC<{
           // Geographic sector detection based on strict boundary check (do not assign nearest sector blindly)
           const detectedSector = getSectorForCoordinates(res.incidentLatitude, res.incidentLongitude);
           setSector(detectedSector || '');
+          setActualPhotoCoords({
+            latitude: res.incidentLatitude,
+            longitude: res.incidentLongitude,
+            sector: detectedSector || undefined,
+          });
 
           showToast(
             'Location Detected from Photo',
@@ -857,6 +963,7 @@ export const CitizenReportFlow: React.FC<{
           );
         } else {
           // EXIF GPS not available in photo
+          setActualPhotoCoords(null);
           setLocationSource('USER_DECLARED');
           const coords = SECTOR_COORDINATES[sector] || [30.7415, 76.7794];
           setIncidentCoords({
@@ -1082,6 +1189,21 @@ export const CitizenReportFlow: React.FC<{
 
 
       /*
+       * Location verification must pass before registering report.
+       */
+      if (!locationMatch.isCorrect) {
+        setSubmitError(
+          `Cannot register complaint: The entered location does not match the actual photo location (${locationMatch.matchPercentage}% match). Please select or type the correct location where the photo was taken.`
+        );
+        showToast(
+          'Location Mismatch',
+          `Cannot register complaint: Location does not match the photo evidence (${locationMatch.matchPercentage}% match).`,
+          'urgent'
+        );
+        return;
+      }
+
+      /*
        * Don't submit twice.
        */
       if (isSubmitting) {
@@ -1244,11 +1366,23 @@ export const CitizenReportFlow: React.FC<{
               }
             }
 
+            if (response.status === 422 || response.status === 400) {
+              setIsSubmitting(false);
+              setSubmitError(message);
+              showToast('Registration Rejected', message, 'urgent');
+              return;
+            }
+
             throw new Error(
               message
             );
           }
-        } catch (fetchErr) {
+        } catch (fetchErr: any) {
+          if (!locationMatch.isCorrect) {
+            setIsSubmitting(false);
+            setSubmitError(`Cannot register complaint: Location does not match the actual photo evidence (${locationMatch.matchPercentage}% match).`);
+            return;
+          }
           console.warn('Backend /reports offline or timed out, persisting local incident record:', fetchErr);
           const fallbackId = `inc-${Date.now().toString().slice(-4)}`;
           const subLat = gpsLocation?.latitude;
@@ -2072,10 +2206,7 @@ export const CitizenReportFlow: React.FC<{
                               }
                             }
                             if (!matched) {
-                              setIncidentCoords({
-                                latitude: 30.7415,
-                                longitude: 76.7794,
-                              });
+                              setIncidentCoords(null);
                             }
                           }}
                           placeholder="Type your location (e.g. Sector 17, Madhya Marg, Sector 35...)"
@@ -2095,11 +2226,13 @@ export const CitizenReportFlow: React.FC<{
                             type="button"
                             onClick={() => {
                               setSector(quickSec);
-                              const coords = SECTOR_COORDINATES[quickSec] || [30.7415, 76.7794];
-                              setIncidentCoords({
-                                latitude: coords[0],
-                                longitude: coords[1],
-                              });
+                              const coords = SECTOR_COORDINATES[quickSec];
+                              if (coords) {
+                                setIncidentCoords({
+                                  latitude: coords[0],
+                                  longitude: coords[1],
+                                });
+                              }
                             }}
                             className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium cursor-pointer transition-colors"
                           >
@@ -2122,7 +2255,71 @@ export const CitizenReportFlow: React.FC<{
                       />
                     </div>
 
-                    {exifResult?.exifGpsAvailable && (
+                    {/* LOCATION VERIFICATION MATCH CARD */}
+                    <div
+                      className={`p-3.5 rounded-xl border transition-all ${
+                        locationMatch.isCorrect
+                          ? 'bg-emerald-50/90 border-emerald-200 text-emerald-950'
+                          : 'bg-rose-50/95 border-rose-300 text-rose-950 shadow-sm'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2.5">
+                        {locationMatch.isCorrect ? (
+                          <CheckCircle2 className="h-5 w-5 text-emerald-600 flex-shrink-0 mt-0.5" />
+                        ) : (
+                          <ShieldAlert className="h-5 w-5 text-rose-600 flex-shrink-0 mt-0.5" />
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-xs uppercase tracking-wider">
+                                {locationMatch.isCorrect ? 'Location Verified' : 'Location Not Correct'}
+                              </span>
+                              <span
+                                className={`text-xs font-black px-2 py-0.5 rounded-full ${
+                                  locationMatch.isCorrect
+                                    ? 'bg-emerald-200 text-emerald-900'
+                                    : 'bg-rose-200 text-rose-900'
+                                }`}
+                              >
+                                {locationMatch.matchPercentage}% Match
+                              </span>
+                            </div>
+
+                            {actualPhotoCoords && !locationMatch.isCorrect && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setLocationSource('EXIF_GPS');
+                                  setIncidentCoords({
+                                    latitude: actualPhotoCoords.latitude,
+                                    longitude: actualPhotoCoords.longitude,
+                                  });
+                                  if (actualPhotoCoords.sector) {
+                                    setSector(actualPhotoCoords.sector);
+                                  }
+                                }}
+                                className="text-xs font-bold text-rose-700 hover:text-rose-900 underline cursor-pointer"
+                              >
+                                ← Restore actual photo location
+                              </button>
+                            )}
+                          </div>
+
+                          <p className="text-xs mt-1.5 text-slate-700 font-medium leading-relaxed">
+                            {locationMatch.reason}
+                          </p>
+
+                          {!locationMatch.isCorrect && (
+                            <div className="mt-2.5 text-xs bg-rose-100/90 border border-rose-200 rounded-lg p-2.5 text-rose-900 font-medium">
+                              ⚠️ <b>Submission is disabled:</b> You have changed the location to a place that does not match the actual location of the photo. The complaint cannot be registered until the location matches the photo evidence (or you restore the actual location).
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {exifResult?.exifGpsAvailable && locationMatch.isCorrect && (
                       <button
                         type="button"
                         className="text-xs text-cyan-700 font-semibold hover:underline flex items-center gap-1"
@@ -2133,10 +2330,14 @@ export const CitizenReportFlow: React.FC<{
                               latitude: exifResult.incidentLatitude,
                               longitude: exifResult.incidentLongitude,
                             });
+                            const detectedSec = getSectorForCoordinates(exifResult.incidentLatitude, exifResult.incidentLongitude);
+                            if (detectedSec) {
+                              setSector(detectedSec);
+                            }
                           }
                         }}
                       >
-                        ← Restore photo GPS coordinates
+                        ← Restore original photo coordinates
                       </button>
                     )}
                   </div>
@@ -2827,13 +3028,21 @@ export const CitizenReportFlow: React.FC<{
 
 
               <button
-                className="citizen-primary-button"
+                className={`citizen-primary-button ${
+                  !locationMatch.isCorrect ? 'opacity-50 cursor-not-allowed' : ''
+                }`}
                 onClick={
                   submit
                 }
                 disabled={
                   isSubmitting ||
-                  !aiAnalysis
+                  !aiAnalysis ||
+                  !locationMatch.isCorrect
+                }
+                title={
+                  !locationMatch.isCorrect
+                    ? `Cannot submit: Location does not match the photo (${locationMatch.matchPercentage}% match).`
+                    : undefined
                 }
               >
 
@@ -2868,6 +3077,12 @@ export const CitizenReportFlow: React.FC<{
               </button>
 
             </div>
+
+            {!locationMatch.isCorrect && (
+              <div className="mt-2.5 p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-center text-xs text-rose-800 font-medium">
+                ⚠️ <b>Submission Disabled:</b> The entered location does not match the actual location of the photo ({locationMatch.matchPercentage}% match). Complaint cannot be registered until the location is correct.
+              </div>
+            )}
 
 
             {/* PRIVACY */}

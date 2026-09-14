@@ -159,10 +159,11 @@ export const CivicMap: React.FC<CivicMapProps> = ({
     if (!mapContainerRef.current) return;
 
     if (!mapInstanceRef.current) {
-      // Initialize map centered on Chandigarh
+      // Initialize map with a wider Punjab–Chandigarh–Haryana viewport.
+      // This changes only the initial view; users can still pan/zoom freely.
       const map = L.map(mapContainerRef.current, {
-        center: [30.736, 76.782],
-        zoom: 13,
+        center: [30.5, 76.0],
+        zoom: 8,
         zoomControl: false,
         attributionControl: false,
         dragging: true,

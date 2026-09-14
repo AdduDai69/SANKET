@@ -24,6 +24,7 @@ from closure_engine import (
 from location_engine import (
     extract_image_exif_metadata,
     calculate_location_verification_score,
+    verify_location_match,
     get_sector_for_coordinates,
     SOURCE_EXIF_GPS,
     SOURCE_USER_DECLARED,
@@ -75,7 +76,6 @@ app.add_middleware(
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "https://sanket-w8uy.vercel.app",
-        "https://sanket-civiclens.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -1118,6 +1118,34 @@ async def extract_location(
 
 
 # ============================================================
+# LOCATION MATCH VERIFICATION ENDPOINT
+# ============================================================
+
+class LocationMatchRequest(BaseModel):
+    actual_latitude: float | None = None
+    actual_longitude: float | None = None
+    candidate_latitude: float | None = None
+    candidate_longitude: float | None = None
+    candidate_sector: str | None = None
+
+
+@app.post("/verify-location-match")
+async def verify_location_match_endpoint(req: LocationMatchRequest):
+    """
+    Verifies if a candidate/changed location matches the actual incident location.
+    Provides match percentage (0-100) and whether the location is correct.
+    Zero external AI credits consumed (fully deterministic spatial evaluation).
+    """
+    return verify_location_match(
+        actual_lat=req.actual_latitude,
+        actual_lon=req.actual_longitude,
+        candidate_lat=req.candidate_latitude,
+        candidate_lon=req.candidate_longitude,
+        candidate_sector=req.candidate_sector,
+    )
+
+
+# ============================================================
 # ISSUE TITLE
 # ============================================================
 
@@ -1827,8 +1855,40 @@ async def create_report(
     exif_meta = extract_image_exif_metadata(image_bytes)
 
     if exif_meta.get("exif_gps_available"):
-        final_incident_lat = exif_meta["incident_latitude"]
-        final_incident_lon = exif_meta["incident_longitude"]
+        actual_lat = exif_meta["incident_latitude"]
+        actual_lon = exif_meta["incident_longitude"]
+
+        # Verify if citizen-declared location matches actual photo location
+        declared_lat = incident_latitude if incident_latitude is not None else latitude
+        declared_lon = incident_longitude if incident_longitude is not None else longitude
+
+        if declared_lat is not None and declared_lon is not None:
+            match_check = verify_location_match(
+                actual_lat=actual_lat,
+                actual_lon=actual_lon,
+                candidate_lat=declared_lat,
+                candidate_lon=declared_lon,
+                candidate_sector=sector,
+            )
+            if not match_check["is_correct"] or match_check["match_percentage"] < 50.0:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "message": (
+                            f"Location verification failed: The declared location does not match the actual location of the photo "
+                            f"({match_check['match_percentage']:.1f}% match, {match_check.get('distance_meters', 0):.0f}m away). "
+                            "Complaint cannot be registered."
+                        ),
+                        "match_percentage": match_check["match_percentage"],
+                        "distance_meters": match_check.get("distance_meters"),
+                        "location_status": STATUS_REJECTED,
+                        "location_score": match_check["match_percentage"],
+                        "reason": match_check["reason"],
+                    },
+                )
+
+        final_incident_lat = actual_lat
+        final_incident_lon = actual_lon
         final_location_source = SOURCE_EXIF_GPS
         capture_timestamp = exif_meta.get("capture_timestamp")
         # Submission location is captured separately from current device
@@ -1838,6 +1898,29 @@ async def create_report(
         # Fallback: citizen manually declared incident location
         final_incident_lat = incident_latitude if incident_latitude is not None else latitude
         final_incident_lon = incident_longitude if incident_longitude is not None else longitude
+
+        match_check = verify_location_match(
+            actual_lat=None,
+            actual_lon=None,
+            candidate_lat=final_incident_lat,
+            candidate_lon=final_incident_lon,
+            candidate_sector=sector,
+        )
+        if not match_check["is_correct"]:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": (
+                        f"Location verification failed: {match_check['reason']} "
+                        f"({match_check['match_percentage']:.1f}% match). Complaint cannot be registered."
+                    ),
+                    "match_percentage": match_check["match_percentage"],
+                    "location_status": STATUS_REJECTED,
+                    "location_score": match_check["match_percentage"],
+                    "reason": match_check["reason"],
+                },
+            )
+
         final_location_source = (
             SOURCE_USER_DECLARED
             if (final_incident_lat is not None and final_incident_lon is not None)
@@ -3502,4 +3585,4 @@ def associate_incident_with_asset(
         "asset_id": payload.asset_id,
         "asset_name": asset.get("name"),
         "distance_meters": payload.distance_meters
-    }
+    }

@@ -109,6 +109,107 @@ def calculate_haversine_distance_meters(
 
 
 # ============================================================
+# LOCATION MATCH VERIFICATION
+# ============================================================
+
+def verify_location_match(
+    *,
+    actual_lat: float | None,
+    actual_lon: float | None,
+    candidate_lat: float | None,
+    candidate_lon: float | None,
+    candidate_sector: str | None = None,
+) -> dict[str, Any]:
+    """
+    Verifies if a candidate/changed location accurately matches the actual incident location
+    derived from photo evidence (or detected location).
+    Returns match percentage (0-100), whether it is correct (boolean), status, distance, and reason.
+    Uses pure mathematical distance and sector boundary analysis without consuming AI/LLM API credits.
+    """
+    has_actual = (
+        actual_lat is not None
+        and actual_lon is not None
+        and math.isfinite(actual_lat)
+        and math.isfinite(actual_lon)
+        and not (actual_lat == 0.0 and actual_lon == 0.0)
+    )
+
+    has_candidate = (
+        candidate_lat is not None
+        and candidate_lon is not None
+        and math.isfinite(candidate_lat)
+        and math.isfinite(candidate_lon)
+        and not (candidate_lat == 0.0 and candidate_lon == 0.0)
+    )
+
+    if not has_candidate:
+        return {
+            "match_percentage": 0.0,
+            "is_correct": False,
+            "status": STATUS_REJECTED,
+            "distance_meters": None,
+            "reason": "Invalid or unresolvable candidate location coordinates.",
+        }
+
+    if not has_actual:
+        # Photo has no ground truth GPS. Check if candidate falls in municipal service boundary.
+        in_service_sector = get_sector_for_coordinates(candidate_lat, candidate_lon) is not None
+        if in_service_sector or (candidate_sector and candidate_sector in SECTOR_BOUNDARIES):
+            return {
+                "match_percentage": 70.0,
+                "is_correct": True,
+                "status": STATUS_UNDER_CONSIDERATION,
+                "distance_meters": None,
+                "reason": "Valid citizen-declared location in municipal area (no photo GPS available).",
+            }
+        return {
+            "match_percentage": 25.0,
+            "is_correct": False,
+            "status": STATUS_REJECTED,
+            "distance_meters": None,
+            "reason": "Location is outside municipal service boundaries.",
+        }
+
+    # Both actual and candidate coordinates exist: calculate haversine distance
+    dist_m = calculate_haversine_distance_meters(actual_lat, actual_lon, candidate_lat, candidate_lon)
+
+    if dist_m <= 100.0:
+        pct = round(100.0 - (dist_m / 100.0) * 5.0, 1)
+        is_correct = True
+        status = STATUS_VERIFIED
+        reason = f"Location verified: within {dist_m:.0f}m of actual photo location."
+    elif dist_m <= 500.0:
+        pct = round(95.0 - ((dist_m - 100.0) / 400.0) * 15.0, 1)
+        is_correct = True
+        status = STATUS_VERIFIED
+        reason = f"Location matches photo neighborhood ({dist_m:.0f}m away)."
+    elif dist_m <= 1000.0:
+        pct = round(80.0 - ((dist_m - 500.0) / 500.0) * 20.0, 1)
+        is_correct = True
+        status = STATUS_VERIFIED
+        reason = f"Location within acceptable sector vicinity ({dist_m:.0f}m away)."
+    elif dist_m <= 1500.0:
+        pct = round(60.0 - ((dist_m - 1000.0) / 500.0) * 15.0, 1)
+        is_correct = pct >= 50.0
+        status = STATUS_UNDER_CONSIDERATION if is_correct else STATUS_REJECTED
+        reason = f"Location is {dist_m:.0f}m away from photo evidence."
+    else:
+        # Distance > 1500 meters: drops steeply down to 0%
+        pct = max(0.0, round(45.0 - ((dist_m - 1500.0) / 4000.0) * 45.0, 1))
+        is_correct = False
+        status = STATUS_REJECTED
+        reason = f"Location mismatch: declared location is {dist_m / 1000.0:.2f} km away from actual photo evidence."
+
+    return {
+        "match_percentage": pct,
+        "is_correct": is_correct,
+        "status": status,
+        "distance_meters": round(dist_m, 1),
+        "reason": reason,
+    }
+
+
+# ============================================================
 # EXIF GPS EXTRACTION
 # ============================================================
 

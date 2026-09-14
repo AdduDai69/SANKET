@@ -152,6 +152,49 @@ class TestApiEndpoints(unittest.TestCase):
         self.assertTrue(data["success"])
         self.assertEqual(data["asset_id"], "S35-L092")
 
+    def test_verify_location_match_endpoint(self):
+        response = self.client.post(
+            "/verify-location-match",
+            json={
+                "actual_latitude": 30.7333,
+                "actual_longitude": 76.7794,
+                "candidate_latitude": 30.7335,
+                "candidate_longitude": 76.7794,
+                "candidate_sector": "Sector 17"
+            }
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["is_correct"])
+        self.assertGreaterEqual(data["match_percentage"], 95.0)
+
+    def test_reports_location_mismatch_rejected(self):
+        """When photo has EXIF GPS, declaring a mismatched location (~3.5km away) rejects registration with 422."""
+        img_bytes = create_test_jpeg_bytes(
+            include_exif=True,
+            include_gps=True,
+            lat_dms=(30.0, 44.0, 25.0), # ~30.7402
+            lon_dms=(76.0, 46.0, 45.0)  # ~76.7791
+        )
+        # Declared location is far away in Sector 35 (~30.7200, 76.7600)
+        response = self.client.post(
+            "/reports",
+            data={
+                "description": "Pothole in wrong place",
+                "sector": "Sector 35",
+                "incident_latitude": "30.7200",
+                "incident_longitude": "76.7600",
+                "location_source": "EXIF_GPS",
+                "ai_analysis": '{"issue_type":"pothole","confidence":0.95,"severity":"High","description":"Deep pothole","recommended_department":"Engineering","visible_evidence":["broken asphalt"]}'
+            },
+            files={"file": ("pothole.jpg", img_bytes, "image/jpeg")}
+        )
+        self.assertEqual(response.status_code, 422)
+        detail = response.json()["detail"]
+        self.assertIn("Location verification failed", detail["message"])
+        self.assertEqual(detail["location_status"], "REJECTED")
+        self.assertLess(detail["match_percentage"], 50.0)
+
 if __name__ == "__main__":
     unittest.main()
 

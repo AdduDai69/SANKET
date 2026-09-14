@@ -38,6 +38,7 @@ from location_engine import (
     SOURCE_NONE,
     extract_image_exif_metadata,
     calculate_location_verification_score,
+    verify_location_match,
     _convert_dms_to_decimal,
 )
 
@@ -403,6 +404,77 @@ class TestIncidentLocationVerification(unittest.TestCase):
         self.assertEqual(incident_lon, 76.7794)
         self.assertEqual(location_status, "VERIFIED")
         self.assertEqual(location_source, "LEGACY_RECORD")
+
+    # --------------------------------------------------------
+    # Case 21: Location match verification — Close match
+    # --------------------------------------------------------
+    def test_21_location_match_close_photo_location(self):
+        actual_lat = 30.7333
+        actual_lon = 76.7794
+        # Candidate 35 meters away
+        candidate_lat = 30.7336
+        candidate_lon = 76.7794
+        res = verify_location_match(
+            actual_lat=actual_lat,
+            actual_lon=actual_lon,
+            candidate_lat=candidate_lat,
+            candidate_lon=candidate_lon,
+            candidate_sector="Sector 17",
+        )
+        self.assertTrue(res["is_correct"])
+        self.assertGreaterEqual(res["match_percentage"], 95.0)
+        self.assertEqual(res["status"], STATUS_VERIFIED)
+
+    # --------------------------------------------------------
+    # Case 22: Location match verification — Incorrect location (Mismatch)
+    # --------------------------------------------------------
+    def test_22_location_mismatch_incorrect_location_rejected(self):
+        # Actual photo taken in Sector 35
+        actual_lat = 30.7200
+        actual_lon = 76.7600
+        # User changes location to Sector 17 (~3.5 km away)
+        candidate_lat = 30.7415
+        candidate_lon = 76.7794
+        res = verify_location_match(
+            actual_lat=actual_lat,
+            actual_lon=actual_lon,
+            candidate_lat=candidate_lat,
+            candidate_lon=candidate_lon,
+            candidate_sector="Sector 17",
+        )
+        self.assertFalse(res["is_correct"])
+        self.assertLess(res["match_percentage"], 50.0)
+        self.assertEqual(res["status"], STATUS_REJECTED)
+        self.assertIn("Location mismatch", res["reason"])
+
+    # --------------------------------------------------------
+    # Case 23: Location match verification — Missing photo GPS
+    # --------------------------------------------------------
+    def test_23_location_match_no_photo_gps_valid_declared_sector(self):
+        # Photo has no EXIF GPS
+        res = verify_location_match(
+            actual_lat=None,
+            actual_lon=None,
+            candidate_lat=30.7415,
+            candidate_lon=76.7794,
+            candidate_sector="Sector 17",
+        )
+        self.assertTrue(res["is_correct"])
+        self.assertEqual(res["match_percentage"], 70.0)
+
+    # --------------------------------------------------------
+    # Case 24: Location match verification — Invalid coordinates
+    # --------------------------------------------------------
+    def test_24_location_match_invalid_coordinates(self):
+        res = verify_location_match(
+            actual_lat=30.7200,
+            actual_lon=76.7600,
+            candidate_lat=None,
+            candidate_lon=None,
+        )
+        self.assertFalse(res["is_correct"])
+        self.assertEqual(res["match_percentage"], 0.0)
+        self.assertEqual(res["status"], STATUS_REJECTED)
 
 
 if __name__ == "__main__":
