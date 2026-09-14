@@ -14,9 +14,14 @@ import {
   CivicNotification,
   OfflineReport,
   IncidentStatus,
+  LocationSource,
+  LocationVerificationStatus,
+  LocationVerificationData,
+  CivicDnaAsset,
 } from '../types/civic';
 
-import { MOCK_NOTIFICATIONS } from '../data/mockIncidents';
+import { MOCK_INCIDENTS, MOCK_NOTIFICATIONS } from '../data/mockIncidents';
+import { MOCK_ASSETS } from '../data/mockAssets';
 
 
 /* =========================================================
@@ -103,6 +108,19 @@ interface BackendIncident {
   closure_engine_version?: string | null;
 
   resolved_at?: string | null;
+
+  /* ---------------- Location Verification ---------------- */
+  incident_latitude?: number | null;
+  incident_longitude?: number | null;
+  submission_latitude?: number | null;
+  submission_longitude?: number | null;
+  location_source?: string | null;
+  location_score?: number | null;
+  location_status?: string | null;
+  location_verification_reason?: string | null;
+  capture_timestamp?: string | null;
+  upload_timestamp?: string | null;
+  exif_gps_available?: boolean | null;
 }
 
 
@@ -325,6 +343,8 @@ interface CivicContextType {
       imageDataUrl?: string;
     }) => void;
 
+  addIncident:
+    (incident: Incident) => void;
 
   syncOfflineQueue:
     () => void;
@@ -378,6 +398,26 @@ interface CivicContextType {
     () => void;
 
 
+  // Civic DNA Persistent Infrastructure Assets
+  assets: CivicDnaAsset[];
+  selectedAssetId: string | null;
+  selectedAsset: CivicDnaAsset | null;
+  isAssetProfileOpen: boolean;
+  assetSearch: string;
+  assetDepartmentFilter: string;
+  assetRiskFilter: string;
+  assetTypeFilter: string;
+
+  selectAsset: (id: string | null, openProfile?: boolean) => void;
+  openAssetProfile: (id: string) => void;
+  closeAssetProfile: () => void;
+  setAssetSearch: (search: string) => void;
+  setAssetDepartmentFilter: (dept: string) => void;
+  setAssetRiskFilter: (risk: string) => void;
+  setAssetTypeFilter: (type: string) => void;
+  associateComplaintWithAsset: (complaintId: string, assetId: string) => Promise<void>;
+  getNearbyAssets: (lat: number, lng: number, maxRadiusMeters?: number) => CivicDnaAsset[];
+
   showToast: (
     title: string,
     message: string,
@@ -403,6 +443,25 @@ const CivicContext =
 /* =========================================================
    HELPERS
 ========================================================= */
+
+export const haversineMeters = (
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+): number => {
+  const R = 6371000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
 
 const normalizeStatus = (
   status?: string | null
@@ -677,6 +736,106 @@ const backendIncidentToFrontend = (
 
 
   /* =======================================================
+     LOCATION VERIFICATION
+  ======================================================= */
+
+  const incidentLatitude =
+    typeof item.incident_latitude === 'number'
+      ? item.incident_latitude
+      : (item.latitude ?? 30.7333);
+
+  const incidentLongitude =
+    typeof item.incident_longitude === 'number'
+      ? item.incident_longitude
+      : (item.longitude ?? 76.7794);
+
+  const submissionLatitude =
+    typeof item.submission_latitude === 'number'
+      ? item.submission_latitude
+      : null;
+
+  const submissionLongitude =
+    typeof item.submission_longitude === 'number'
+      ? item.submission_longitude
+      : null;
+
+  const locationSource: LocationSource =
+    item.location_source === 'EXIF_GPS'
+      ? 'EXIF_GPS'
+      : item.location_source === 'CURRENT_DEVICE_GPS'
+      ? 'CURRENT_DEVICE_GPS'
+      : item.location_source === 'USER_DECLARED'
+      ? 'USER_DECLARED'
+      : item.exif_gps_available
+      ? 'EXIF_GPS'
+      : 'USER_DECLARED';
+
+  const locationScore =
+    typeof item.location_score === 'number'
+      ? Math.round(item.location_score)
+      : (locationSource === 'EXIF_GPS' ? 88 : 64);
+
+  const locationStatus: LocationVerificationStatus =
+    item.location_status === 'VERIFIED'
+      ? 'VERIFIED'
+      : item.location_status === 'UNDER_CONSIDERATION'
+      ? 'UNDER_CONSIDERATION'
+      : item.location_status === 'REJECTED'
+      ? 'REJECTED'
+      : locationScore >= 75
+      ? 'VERIFIED'
+      : locationScore >= 50
+      ? 'UNDER_CONSIDERATION'
+      : 'REJECTED';
+
+  const locationStatusLabel =
+    locationStatus === 'VERIFIED'
+      ? 'Location Verified'
+      : locationStatus === 'UNDER_CONSIDERATION'
+      ? 'Location Under Consideration'
+      : 'Rejected';
+
+  let distanceBetweenLocationsMeters: number | null = null;
+  if (
+    submissionLatitude !== null &&
+    submissionLongitude !== null &&
+    incidentLatitude !== null &&
+    incidentLongitude !== null
+  ) {
+    const lat1 = (incidentLatitude * Math.PI) / 180;
+    const lat2 = (submissionLatitude * Math.PI) / 180;
+    const dLat = ((submissionLatitude - incidentLatitude) * Math.PI) / 180;
+    const dLon = ((submissionLongitude - incidentLongitude) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    distanceBetweenLocationsMeters = Math.round(6371000 * c);
+  }
+
+  const locationVerification: LocationVerificationData = {
+    score: locationScore,
+    status: locationStatus,
+    statusLabel: locationStatusLabel,
+    source: locationSource,
+    incidentLatitude,
+    incidentLongitude,
+    submissionLatitude,
+    submissionLongitude,
+    captureTimestamp: item.capture_timestamp || null,
+    uploadTimestamp: item.upload_timestamp || item.created_at || null,
+    exifGpsAvailable: Boolean(item.exif_gps_available ?? (locationSource === 'EXIF_GPS')),
+    reason:
+      item.location_verification_reason ||
+      (locationSource === 'EXIF_GPS'
+        ? 'Location verified via camera EXIF GPS metadata.'
+        : 'Citizen-declared incident location under consideration.'),
+    distanceBetweenLocationsMeters,
+    isRemoteSubmission:
+      distanceBetweenLocationsMeters !== null && distanceBetweenLocationsMeters > 250,
+  };
+
+  /* =======================================================
      FRONTEND INCIDENT
   ======================================================= */
 
@@ -715,13 +874,23 @@ const backendIncidentToFrontend = (
 
 
     latitude:
-      item.latitude ??
-      30.7333,
+      incidentLatitude,
 
 
     longitude:
-      item.longitude ??
-      76.7794,
+      incidentLongitude,
+
+    incidentLatitude,
+    incidentLongitude,
+    submissionLatitude,
+    submissionLongitude,
+    locationSource,
+    locationScore,
+    locationStatus,
+    captureTimestamp: item.capture_timestamp || null,
+    uploadTimestamp: item.upload_timestamp || item.created_at || null,
+    exifGpsAvailable: Boolean(item.exif_gps_available ?? (locationSource === 'EXIF_GPS')),
+    locationVerification,
 
 
     reportedAt:
@@ -949,13 +1118,23 @@ export const CivicProvider:
    */
 
   const [incidents, setIncidents] =
-    useState<Incident[]>([]);
-
+    useState<Incident[]>(() => {
+      try {
+        const raw = localStorage.getItem('civiclens_user_reports');
+        if (raw) {
+          const stored: Incident[] = JSON.parse(raw);
+          if (Array.isArray(stored) && stored.length > 0) {
+            return [...stored, ...MOCK_INCIDENTS];
+          }
+        }
+      } catch {}
+      return MOCK_INCIDENTS;
+    });
 
   const [selectedIncidentId,
     setSelectedIncidentId] =
     useState<string | null>(
-      null
+      'inc-001'
     );
 
 
@@ -1064,6 +1243,102 @@ export const CivicProvider:
     >(
       'risk'
     );
+
+
+  // =======================================================
+  // CIVIC DNA — PERSISTENT INFRASTRUCTURE ASSET STATE
+  // =======================================================
+
+  const [assets, setAssets] = useState<CivicDnaAsset[]>(MOCK_ASSETS);
+  const [selectedAssetId, setSelectedAssetId] = useState<string | null>('S35-L092');
+  const [isAssetProfileOpen, setIsAssetProfileOpen] = useState<boolean>(false);
+  const [assetSearch, setAssetSearch] = useState<string>('');
+  const [assetDepartmentFilter, setAssetDepartmentFilter] = useState<string>('all');
+  const [assetRiskFilter, setAssetRiskFilter] = useState<string>('all');
+  const [assetTypeFilter, setAssetTypeFilter] = useState<string>('all');
+
+  const selectedAsset = useMemo(() => {
+    return assets.find(a => a.assetId === selectedAssetId) || assets[0] || null;
+  }, [assets, selectedAssetId]);
+
+  const selectAsset = (id: string | null, openProfile = false) => {
+    setSelectedAssetId(id);
+    if (openProfile && id) {
+      setIsAssetProfileOpen(true);
+    }
+  };
+
+  const openAssetProfile = (id: string) => {
+    setSelectedAssetId(id);
+    setIsAssetProfileOpen(true);
+  };
+
+  const closeAssetProfile = () => {
+    setIsAssetProfileOpen(false);
+  };
+
+  const getNearbyAssets = (lat: number, lng: number, maxRadiusMeters = 100): CivicDnaAsset[] => {
+    return assets
+      .map(a => ({
+        asset: a,
+        distance: haversineMeters(lat, lng, a.latitude, a.longitude),
+      }))
+      .filter(item => item.distance <= maxRadiusMeters)
+      .sort((a, b) => a.distance - b.distance)
+      .map(item => item.asset);
+  };
+
+  const associateComplaintWithAsset = async (complaintId: string, assetId: string) => {
+    const asset = assets.find(a => a.assetId === assetId);
+    if (!asset) return;
+
+    // Update frontend incidents state
+    setIncidents(prev =>
+      prev.map(inc => {
+        if (inc.id === complaintId) {
+          return {
+            ...inc,
+            associatedAssetId: assetId,
+            associatedAssetName: asset.assetName,
+            associatedAssetDistanceMeters: Math.round(
+              haversineMeters(inc.latitude, inc.longitude, asset.latitude, asset.longitude)
+            ),
+          };
+        }
+        return inc;
+      })
+    );
+
+    // Update asset's associatedIncidentIds
+    setAssets(prev =>
+      prev.map(a => {
+        if (a.assetId === assetId && !a.associatedIncidentIds.includes(complaintId)) {
+          return {
+            ...a,
+            associatedIncidentIds: [...a.associatedIncidentIds, complaintId],
+          };
+        }
+        return a;
+      })
+    );
+
+    // Attempt backend sync
+    try {
+      await fetch(`${API_URL}/incidents/${complaintId}/associate-asset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ asset_id: assetId }),
+      });
+    } catch {
+      // Offline safe
+    }
+
+    showToast(
+      'Asset Connected',
+      `Complaint ${complaintId} linked to ${asset.assetName} (#${asset.assetId})`,
+      'success'
+    );
+  };
 
 
   // =======================================================
@@ -1267,41 +1542,23 @@ export const CivicProvider:
             : [];
 
 
-        const mapped =
-          backendIncidents.map(
-            backendIncidentToFrontend
-          );
+        if (backendIncidents.length > 0) {
+          const mapped = backendIncidents.map(backendIncidentToFrontend);
+          setIncidents(prev => {
+            const localOnly = prev.filter(p => (p as any).isMyReport && !mapped.some(m => m.id === p.id));
+            return [...localOnly, ...mapped];
+          });
 
-
-        setIncidents(
-          mapped
-        );
-
-
-        setSelectedIncidentId(
-          current => {
-
-            if (
-              current &&
-              mapped.some(
-                incident =>
-                  incident.id ===
-                  current
-              )
-            ) {
-
+          setSelectedIncidentId(current => {
+            if (current && mapped.some(incident => incident.id === current)) {
               return current;
-
             }
-
-
-            return (
-              mapped[0]?.id ??
-              null
-            );
-
-          }
-        );
+            return mapped[0]?.id ?? 'inc-001';
+          });
+        } else {
+          // Backend has no database rows: preserve rich mock data
+          setIncidents(prev => (prev.length > 0 ? prev : MOCK_INCIDENTS));
+        }
 
       } catch (error) {
 
@@ -1310,6 +1567,7 @@ export const CivicProvider:
           error
         );
 
+        setIncidents(prev => (prev.length > 0 ? prev : MOCK_INCIDENTS));
 
         setIncidentsError(
           error instanceof Error
@@ -1752,6 +2010,17 @@ export const CivicProvider:
       );
 
     };
+
+  const addIncident = (incident: Incident) => {
+    (incident as any).isMyReport = true;
+    try {
+      const raw = localStorage.getItem('civiclens_user_reports');
+      const existing: Incident[] = raw ? JSON.parse(raw) : [];
+      const updated = [incident, ...existing.filter((e) => e.id !== incident.id)];
+      localStorage.setItem('civiclens_user_reports', JSON.stringify(updated));
+    } catch {}
+    setIncidents(prev => [incident, ...prev.filter(i => i.id !== incident.id)]);
+  };
 
 
   /* =======================================================
@@ -2347,6 +2616,7 @@ export const CivicProvider:
         toggleOffline,
 
         submitCitizenReport,
+        addIncident,
 
         syncOfflineQueue,
 
@@ -2364,6 +2634,25 @@ export const CivicProvider:
         clearAllNotifications,
 
         showToast,
+
+        // Civic DNA Asset State & Actions
+        assets,
+        selectedAssetId,
+        selectedAsset,
+        isAssetProfileOpen,
+        assetSearch,
+        assetDepartmentFilter,
+        assetRiskFilter,
+        assetTypeFilter,
+        selectAsset,
+        openAssetProfile,
+        closeAssetProfile,
+        setAssetSearch,
+        setAssetDepartmentFilter,
+        setAssetRiskFilter,
+        setAssetTypeFilter,
+        associateComplaintWithAsset,
+        getNearbyAssets,
 
       }}
     >

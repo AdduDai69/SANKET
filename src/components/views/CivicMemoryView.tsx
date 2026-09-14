@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 
 export const CivicMemoryView: React.FC = () => {
-  const { incidents, selectIncident, setIsDetailOpen, setActiveTab } = useCivic();
+  const { incidents, selectIncident, setIsDetailOpen, setActiveTab, assets, openAssetProfile } = useCivic();
 
   const [selectedSiteId, setSelectedSiteId] = useState<string>('inc-001');
   const [memorySearch, setMemorySearch] = useState<string>('');
@@ -39,6 +39,10 @@ export const CivicMemoryView: React.FC = () => {
 
   const selectedSite =
     recurringIncidents.find((i) => i.id === selectedSiteId) || recurringIncidents[0];
+
+  const matchedAsset = selectedSite?.associatedAssetId
+    ? assets.find((a) => a.assetId === selectedSite.associatedAssetId)
+    : null;
 
   return (
     <div className="space-y-6 text-left animate-fade-in">
@@ -162,15 +166,53 @@ export const CivicMemoryView: React.FC = () => {
                   </p>
                 </div>
 
-                <button
-                  onClick={() => {
-                    selectIncident(selectedSite.id, true);
-                  }}
-                  className="self-start sm:self-auto px-3 py-1.5 rounded-lg bg-[#191B1F] text-white text-xs font-bold hover:bg-[#2C2F35] transition-colors"
-                >
-                  Open Incident File →
-                </button>
+                <div className="flex items-center gap-2 self-start sm:self-auto">
+                  {matchedAsset && (
+                    <button
+                      onClick={() => openAssetProfile(matchedAsset.assetId)}
+                      className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-xs font-semibold hover:bg-amber-700 transition-colors flex items-center gap-1.5 shadow-xs"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-amber-200" />
+                      <span>Civic DNA #{matchedAsset.assetId}</span>
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      selectIncident(selectedSite.id, true);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-[#191B1F] text-white text-xs font-bold hover:bg-[#2C2F35] transition-colors"
+                  >
+                    Open Incident File →
+                  </button>
+                </div>
               </div>
+
+              {/* Linked Civic DNA Asset Banner */}
+              {matchedAsset && (
+                <div className="p-3.5 rounded-xl bg-amber-50/60 border border-amber-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <span className="font-mono font-bold text-amber-900">
+                        PHYSICAL ASSET: #{matchedAsset.assetId}
+                      </span>
+                      <span className="bg-amber-100 text-amber-900 px-1.5 py-0.2 rounded font-mono text-[10px] font-bold">
+                        Health: {matchedAsset.currentHealthScore}/100
+                      </span>
+                    </div>
+                    <div className="font-medium text-stone-900">{matchedAsset.assetName}</div>
+                    <div className="text-stone-500 text-[11px]">
+                      {matchedAsset.department} &bull; Sunk Spend: ₹{matchedAsset.totalMaintenanceCost.toLocaleString('en-IN')} vs New: ₹{matchedAsset.estimatedReplacementCost.toLocaleString('en-IN')}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => openAssetProfile(matchedAsset.assetId)}
+                    className="px-3 py-1.5 rounded-lg bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold shrink-0 transition-colors"
+                  >
+                    Inspect Asset Civic DNA →
+                  </button>
+                </div>
+              )}
 
               {/* Historical Timeline */}
               <div>

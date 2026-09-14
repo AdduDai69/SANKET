@@ -27,12 +27,14 @@ export const MapView: React.FC = () => {
     selectedIncidentId,
     selectedIncident,
     selectIncident,
-    setIsDetailOpen
+    setIsDetailOpen,
+    assets,
   } = useCivic();
 
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [minRisk, setMinRisk] = useState<number>(0);
   const [recurringOnly, setRecurringOnly] = useState<boolean>(false);
+  const [showAssets, setShowAssets] = useState<boolean>(true);
   const [showFilters, setShowFilters] = useState<boolean>(true);
 
   // Filter incidents for map
@@ -43,7 +45,22 @@ export const MapView: React.FC = () => {
     return matchesCategory && matchesRisk && matchesRecurring;
   });
 
-  const active = selectedIncident || mapIncidents[0] || null;
+  // Filter physical infrastructure assets for map (respects category filter & layer toggle)
+  const mapAssets = showAssets
+    ? assets.filter((asset) => {
+        if (categoryFilter === 'all') return true;
+        if (categoryFilter === 'streetlight') return asset.assetType === 'streetlight';
+        if (categoryFilter === 'drainage' || categoryFilter === 'water_leak') return asset.assetType === 'drainage';
+        if (categoryFilter === 'waste') return asset.assetType === 'waste';
+        if (categoryFilter === 'pothole' || categoryFilter === 'road_damage') return asset.assetType === 'road';
+        return true;
+      })
+    : [];
+
+  const active =
+    (selectedIncidentId ? incidents.find((i) => i.id === selectedIncidentId) : null) ||
+    mapIncidents[0] ||
+    null;
 
   return (
     <div className="space-y-4 text-left animate-fade-in">
@@ -54,7 +71,7 @@ export const MapView: React.FC = () => {
             City Geospatial Command
           </h1>
           <p className="text-xs sm:text-sm text-[#565C68] mt-0.5">
-            Full-screen spatial cluster intelligence and recurring failure detection.
+            Full-screen spatial cluster intelligence, recurring failure detection, and Civic DNA assets.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -80,7 +97,7 @@ export const MapView: React.FC = () => {
                 Spatial Filters
               </span>
               <span className="text-[11px] font-mono text-[#7E8592]">
-                {mapIncidents.length} shown
+                {mapIncidents.length} signals{showAssets ? ` • ${mapAssets.length} assets` : ''}
               </span>
             </div>
 
@@ -121,9 +138,25 @@ export const MapView: React.FC = () => {
               />
             </div>
 
+            {/* Infrastructure Assets Layer Toggle */}
+            <div className="pt-2 border-t border-[#E5E3DC] space-y-2">
+              <label className="flex items-center gap-2 text-xs text-[#191B1F] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showAssets}
+                  onChange={(e) => setShowAssets(e.target.checked)}
+                  className="rounded border-[#E5E3DC] text-[#2C5E48] focus:ring-0"
+                />
+                <span className="font-semibold text-amber-900">Civic DNA Assets Layer</span>
+              </label>
+              <p className="text-[10px] text-[#7E8592]">
+                Displays physical municipal fixtures with real-time health score badges.
+              </p>
+            </div>
+
             {/* Recurring Hotspots Only */}
-            <div className="pt-2 border-t border-[#F4F3EF]">
-              <label className="flex items-center gap-2 cursor-pointer text-xs text-[#191B1F]">
+            <div className="pt-2 border-t border-[#E5E3DC]">
+              <label className="flex items-center gap-2 text-xs text-[#191B1F] cursor-pointer">
                 <input
                   type="checkbox"
                   checked={recurringOnly}
@@ -143,7 +176,9 @@ export const MapView: React.FC = () => {
         <div className={`${showFilters ? 'lg:col-span-6' : 'lg:col-span-8'} transition-all`}>
           <CivicMap
             incidents={mapIncidents}
+            assets={mapAssets}
             selectedIncidentId={selectedIncidentId}
+            showAssets={showAssets}
             height="560px"
           />
         </div>
@@ -199,6 +234,45 @@ export const MapView: React.FC = () => {
                   </span>
                 </div>
               </div>
+
+              {/* Co-located Issues at this location */}
+              {(() => {
+                const colocated = incidents.filter(
+                  (o) =>
+                    o.id !== active.id &&
+                    (o.status !== 'resolved' && o.status !== 'closed') &&
+                    Math.abs(o.latitude - active.latitude) < 0.001 &&
+                    Math.abs(o.longitude - active.longitude) < 0.001
+                );
+                if (colocated.length === 0) return null;
+                return (
+                  <div className="p-2.5 rounded-lg bg-[#FAF9F5] border border-[#E5E3DC] space-y-1.5 text-xs">
+                    <div className="flex items-center justify-between text-[11px] font-bold text-[#191B1F]">
+                      <span className="flex items-center gap-1">
+                        <Layers className="w-3.5 h-3.5 text-[#2C5E48]" />
+                        Co-located Issues ({colocated.length + 1} total)
+                      </span>
+                      <span className="text-[10px] text-[#7E8592] font-normal">Same site ≠ Same issue</span>
+                    </div>
+                    <div className="space-y-1">
+                      {colocated.map((c) => (
+                        <button
+                          key={c.id}
+                          onClick={() => selectIncident(c.id, false)}
+                          className="w-full text-left p-1.5 rounded bg-white hover:bg-[#F4F3EF] border border-[#E5E3DC] flex items-center justify-between gap-1 transition-colors text-[11px]"
+                        >
+                          <div className="truncate font-semibold text-[#191B1F]">
+                            {c.category.replace('_', ' ')}: {c.title}
+                          </div>
+                          <span className="text-[10px] text-[#7E8592] font-mono shrink-0">
+                            Risk {c.riskScore}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
 
               <button
                 onClick={() => setIsDetailOpen(true)}

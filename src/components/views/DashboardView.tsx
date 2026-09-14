@@ -17,7 +17,8 @@ import {
   ArrowRight,
   Filter,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  Sparkles,
 } from 'lucide-react';
 
 export const DashboardView: React.FC = () => {
@@ -26,7 +27,9 @@ export const DashboardView: React.FC = () => {
     selectIncident,
     selectedIncidentId,
     setActiveTab,
-    setQueueFilter
+    setQueueFilter,
+    assets,
+    openAssetProfile,
   } = useCivic();
 
   // Attention summary figures
@@ -291,6 +294,94 @@ export const DashboardView: React.FC = () => {
           >
             View All 30 Incidents in Data Table →
           </button>
+        </div>
+      </div>
+
+      {/* ========================================================= */}
+      {/* CIVIC DNA INTELLIGENCE: PERSISTENT INFRASTRUCTURE LAYER   */}
+      {/* ========================================================= */}
+      <div className="bg-white rounded-xl border border-[#E5E3DC] p-5 shadow-xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-[#E5E3DC]">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-amber-100 text-amber-900 flex items-center justify-center">
+              <Sparkles className="w-4 h-4 text-amber-700" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-bold text-[#191B1F] uppercase font-serif tracking-tight">
+                  Civic DNA &bull; Persistent Infrastructure Intelligence
+                </h2>
+                <span className="text-[10px] font-mono font-bold bg-amber-100 text-amber-900 px-2 py-0.5 rounded-full border border-amber-300">
+                  NEW
+                </span>
+              </div>
+              <p className="text-xs text-[#565C68] mt-0.5">
+                Lifecycle telemetry and repair-vs-replace economics for tracked municipal fixtures.
+              </p>
+            </div>
+          </div>
+
+          <button
+            onClick={() => setActiveTab('civic_dna')}
+            className="px-3 py-1.5 rounded-lg bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold flex items-center gap-1.5 self-start sm:self-auto transition-colors"
+          >
+            <span>Open Civic DNA Hub</span>
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {/* Highlight Grid: Top 3 Stressed Assets */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+          {assets.slice(0, 3).map((asset) => {
+            const isSignature = asset.assetId === 'S35-L092';
+            return (
+              <div
+                key={asset.assetId}
+                onClick={() => openAssetProfile(asset.assetId)}
+                className={`p-4 rounded-xl border transition-all cursor-pointer hover:shadow-md ${
+                  isSignature
+                    ? 'border-amber-400 bg-amber-50/40 ring-1 ring-amber-300/60'
+                    : 'border-[#E5E3DC] bg-stone-50/40 hover:bg-stone-50'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="font-mono text-xs font-bold text-stone-900 bg-white px-2 py-0.5 rounded border border-stone-200">
+                    #{asset.assetId}
+                  </span>
+                  <span
+                    className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full ${
+                      asset.currentHealthScore >= 75
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : 'bg-amber-100 text-amber-800'
+                    }`}
+                  >
+                    Health: {asset.currentHealthScore}/100
+                  </span>
+                </div>
+
+                <h3 className="text-xs font-bold text-stone-900 truncate">
+                  {asset.assetName}
+                </h3>
+                <p className="text-[11px] text-stone-500 mt-0.5 truncate">
+                  {asset.location} &bull; {asset.department}
+                </p>
+
+                <div className="my-2.5 pt-2 border-t border-stone-200/60 flex items-center justify-between text-xs font-mono">
+                  <span className="text-stone-500">Spent: ₹{asset.totalMaintenanceCost.toLocaleString('en-IN')}</span>
+                  <span className="font-semibold text-amber-900">
+                    {asset.recommendation.action.replace('_', ' ')}
+                  </span>
+                </div>
+
+                <div className="text-[11px] font-semibold text-stone-900 flex items-center justify-between">
+                  <span className="text-stone-500 font-mono text-[10px]">{asset.events.length} lifecycle events</span>
+                  <span className="text-stone-900 hover:underline flex items-center gap-0.5">
+                    View DNA <ChevronRight className="w-3 h-3" />
+                  </span>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>

@@ -240,7 +240,18 @@ export const IncidentsView: React.FC = () => {
                       </td>
 
                       <td className="px-4 py-3.5">
-                        <div className="font-semibold text-[#191B1F]">{inc.sector}</div>
+                        <div className="font-semibold text-[#191B1F] flex items-center gap-1.5 flex-wrap">
+                          <span>{inc.sector}</span>
+                          {inc.locationVerificationStatus === 'UNDER_CONSIDERATION' ? (
+                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-50 text-amber-700 border border-amber-200" title="Held for location desk review">
+                              Desk Review
+                            </span>
+                          ) : inc.locationSource === 'EXIF_GPS' ? (
+                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-emerald-50 text-emerald-700 border border-emerald-200" title="Photo EXIF GPS Verified">
+                              GPS ✓
+                            </span>
+                          ) : null}
+                        </div>
                         <div className="text-[11px] text-[#7E8592] truncate max-w-xs">{inc.location}</div>
                       </td>
 
@@ -295,7 +306,18 @@ export const IncidentsView: React.FC = () => {
                   <div>
                     <span className="text-[10px] font-mono text-[#7E8592] block">{inc.ticketNumber}</span>
                     <h3 className="text-sm font-bold text-[#191B1F]">{inc.title}</h3>
-                    <p className="text-xs text-[#565C68] mt-0.5">{inc.sector} • {inc.location}</p>
+                    <p className="text-xs text-[#565C68] mt-0.5 flex items-center gap-1.5 flex-wrap">
+                      <span>{inc.sector} • {inc.location}</span>
+                      {inc.locationVerificationStatus === 'UNDER_CONSIDERATION' ? (
+                        <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-50 text-amber-700 border border-amber-200">
+                          Desk Review
+                        </span>
+                      ) : inc.locationSource === 'EXIF_GPS' ? (
+                        <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          GPS ✓
+                        </span>
+                      ) : null}
+                    </p>
                   </div>
                   <RiskBadge score={inc.riskScore} size="sm" showLabel={false} />
                 </div>

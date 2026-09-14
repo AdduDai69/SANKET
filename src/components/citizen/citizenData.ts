@@ -88,11 +88,58 @@ export const updatedLabel = (waitingDays: number): string => {
  * (Prototype: "my reports" are simulated as the first few incidents.)
  */
 export const toCitizenIncidents = (incidents: Incident[]): Incident[] =>
-  incidents.filter((i) => i.status !== 'resolved' || i.waitingDays < 20);
+  incidents.filter((i) => (i as any).isMyReport || i.status !== 'resolved' || i.waitingDays < 20);
 
-/** Prototype "reports I submitted" — stable subset so the demo feels real. */
-export const toMyReports = (incidents: Incident[]): Incident[] =>
-  incidents.filter((i) => ['pothole', 'streetlight', 'drainage'].includes(i.category)).slice(0, 3);
+/**
+ * Reports submitted by the citizen.
+ * Includes user-submitted reports (tracked via isMyReport flag or localStorage IDs),
+ * followed by default sample reports so the list is not empty on first visit.
+ */
+export const toMyReports = (incidents: Incident[]): Incident[] => {
+  let storedUserReports: Incident[] = [];
+  try {
+    const raw = localStorage.getItem('civiclens_user_reports');
+    if (raw) {
+      storedUserReports = JSON.parse(raw);
+    }
+  } catch {}
+
+  let myIds: string[] = [];
+  try {
+    const raw = localStorage.getItem('civiclens_my_report_ids');
+    if (raw) {
+      myIds = JSON.parse(raw);
+    }
+  } catch {}
+
+  // Gather user reports from context memory
+  const memoryUserReports = incidents.filter(
+    (i) => (i as any).isMyReport || myIds.includes(i.id)
+  );
+
+  // Combine stored user reports with memory user reports without duplicates
+  const userReports: Incident[] = [...memoryUserReports];
+  for (const stored of storedUserReports) {
+    if (!userReports.some((u) => u.id === stored.id)) {
+      userReports.push(stored);
+    }
+  }
+
+  // Sample default reports for demonstration if no user reports exist yet
+  const defaultSample = incidents
+    .filter((i) => ['pothole', 'streetlight', 'drainage'].includes(i.category))
+    .slice(0, 3);
+
+  // User submitted reports come first, followed by default sample reports
+  const result: Incident[] = [...userReports];
+  for (const s of defaultSample) {
+    if (!result.some((r) => r.id === s.id)) {
+      result.push(s);
+    }
+  }
+
+  return result;
+};
 
 /** Nearby public issues (approximate area only, no personal data). */
 export const toNearbyIssues = (incidents: Incident[]): Incident[] =>
@@ -126,6 +173,63 @@ export const REPORT_SECTORS = [
   'Sector 35',
   'Manimajra',
 ];
+
+/** Standard central coordinates for Chandigarh sectors. */
+export const SECTOR_COORDINATES: Record<string, [number, number]> = {
+  'Sector 17': [30.7415, 76.7794],
+  'Sector 18': [30.7380, 76.7865],
+  'Sector 19': [30.7330, 76.7930],
+  'Sector 21': [30.7250, 76.7780],
+  'Sector 22': [30.7302, 76.7685],
+  'Sector 26': [30.7280, 76.8080],
+  'Sector 35': [30.7220, 76.7600],
+  'Manimajra': [30.7180, 76.8450],
+};
+
+export interface SectorBounds {
+  minLat: number;
+  maxLat: number;
+  minLon: number;
+  maxLon: number;
+}
+
+/**
+ * Exact geographic boundaries for Chandigarh administrative sectors.
+ * Points outside these boundaries do NOT belong to the sector.
+ */
+export const SECTOR_BOUNDARIES: Record<string, SectorBounds> = {
+  'Sector 17': { minLat: 30.7345, maxLat: 30.7485, minLon: 76.7720, maxLon: 76.7865 },
+  'Sector 18': { minLat: 30.7310, maxLat: 30.7450, minLon: 76.7795, maxLon: 76.7935 },
+  'Sector 19': { minLat: 30.7260, maxLat: 30.7400, minLon: 76.7860, maxLon: 76.8000 },
+  'Sector 21': { minLat: 30.7180, maxLat: 30.7320, minLon: 76.7710, maxLon: 76.7850 },
+  'Sector 22': { minLat: 30.7230, maxLat: 30.7375, minLon: 76.7610, maxLon: 76.7760 },
+  'Sector 26': { minLat: 30.7190, maxLat: 30.7370, minLon: 76.7990, maxLon: 76.8180 },
+  'Sector 35': { minLat: 30.7150, maxLat: 30.7290, minLon: 76.7525, maxLon: 76.7675 },
+  'Manimajra': { minLat: 30.7050, maxLat: 30.7310, minLon: 76.8300, maxLon: 76.8600 },
+};
+
+/**
+ * Determines whether coordinates genuinely fall within an administrative sector's
+ * geographic boundary. Returns the sector name if inside, or null if outside.
+ */
+export function getSectorForCoordinates(lat: number | null | undefined, lon: number | null | undefined): string | null {
+  if (lat == null || lon == null || !Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return null;
+  }
+
+  for (const [secName, bounds] of Object.entries(SECTOR_BOUNDARIES)) {
+    if (
+      lat >= bounds.minLat &&
+      lat <= bounds.maxLat &&
+      lon >= bounds.minLon &&
+      lon <= bounds.maxLon
+    ) {
+      return secName;
+    }
+  }
+
+  return null;
+}
 
 /** Prototype categories a citizen can pick/confirm in the report flow. */
 export const REPORT_CATEGORIES: IssueCategory[] = [

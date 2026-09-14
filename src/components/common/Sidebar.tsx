@@ -14,6 +14,7 @@ import {
   Eye,
   ShieldAlert,
   Flame,
+  Sparkles,
 } from 'lucide-react';
 
 export const Sidebar: React.FC = () => {
@@ -58,6 +59,13 @@ export const Sidebar: React.FC = () => {
       icon: <History className="w-4 h-4" />,
       badge: `${recurringCount} sites`,
       badgeColor: 'bg-[#FDF6EC] text-[#C88427]'
+    },
+    {
+      id: 'civic_dna',
+      label: 'Civic DNA',
+      icon: <Sparkles className="w-4 h-4" />,
+      badge: 'Assets',
+      badgeColor: 'bg-amber-100 text-amber-900 border border-amber-300'
     },
     {
       id: 'analytics',

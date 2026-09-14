@@ -189,7 +189,7 @@ export const CitizenReportsPage: React.FC<{
             <MyReportCard
               key={incident.id}
               incident={incident}
-              detail={<p>{CITIZEN_STATUS[incident.status].explanation}</p>}
+              detail={<p>{(CITIZEN_STATUS[incident.status] || CITIZEN_STATUS.reported).explanation}</p>}
             />
           ))}
         </div>

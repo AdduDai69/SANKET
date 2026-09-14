@@ -18,6 +18,8 @@ import { IncidentDetailDrawer } from './components/views/IncidentDetailDrawer';
 import { ScoreExplanationModal } from './components/intelligence/ScoreExplanationModal';
 import { EvidenceDrawer } from './components/intelligence/EvidenceDrawer';
 import { SmartClosureModal } from './components/intelligence/SmartClosureModal';
+import { CivicDnaView } from './components/views/CivicDnaView';
+import { CivicDnaProfileModal } from './components/dna/CivicDnaProfileModal';
 import {
   LayoutDashboard,
   AlertOctagon,
@@ -25,7 +27,8 @@ import {
   MapPin,
   History,
   BarChart3,
-  FileText
+  FileText,
+  Sparkles
 } from 'lucide-react';
 import { MunicipalTab } from './types/civic';
 import { Persona } from './types/civic';
@@ -41,6 +44,7 @@ const MainShell: React.FC = () => {
     { id: 'incidents', label: 'Incidents', icon: <AlertOctagon className="w-4 h-4" /> },
     { id: 'priority_queue', label: 'Queue', icon: <ListOrdered className="w-4 h-4" /> },
     { id: 'map_view', label: 'Map', icon: <MapPin className="w-4 h-4" /> },
+    { id: 'civic_dna', label: 'Civic DNA', icon: <Sparkles className="w-4 h-4" /> },
     { id: 'civic_memory', label: 'Memory', icon: <History className="w-4 h-4" /> }
   ];
 
@@ -62,6 +66,7 @@ const MainShell: React.FC = () => {
             {activeTab === 'incidents' && <IncidentsView />}
             {activeTab === 'priority_queue' && <PriorityQueueView />}
             {activeTab === 'map_view' && <MapView />}
+            {activeTab === 'civic_dna' && <CivicDnaView />}
             {activeTab === 'civic_memory' && <CivicMemoryView />}
             {activeTab === 'analytics' && <AnalyticsView />}
             {activeTab === 'reports' && <ReportsView />}
@@ -107,6 +112,7 @@ const MainShell: React.FC = () => {
       <ScoreExplanationModal />
       <EvidenceDrawer />
       <SmartClosureModal />
+      <CivicDnaProfileModal />
       <Toast />
     </div>
   );

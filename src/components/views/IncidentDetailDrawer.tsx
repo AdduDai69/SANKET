@@ -25,7 +25,11 @@ import {
   HardHat,
   Eye,
   CheckCircle2,
-  FileText
+  FileText,
+  Crosshair,
+  Camera,
+  Link2,
+  Zap,
 } from 'lucide-react';
 import { CivicMap } from '../common/CivicMap';
 
@@ -39,7 +43,12 @@ export const IncidentDetailDrawer: React.FC = () => {
     setIsEvidenceOpen,
     setIsSmartClosureOpen,
     assignTeam,
-    setActiveTab
+    setActiveTab,
+    assets,
+    openAssetProfile,
+    associateComplaintWithAsset,
+    getNearbyAssets,
+    selectIncident,
   } = useCivic();
 
   if (!isDetailOpen || !selectedIncident) return null;
@@ -49,6 +58,27 @@ export const IncidentDetailDrawer: React.FC = () => {
     setIsDetailOpen(false);
     setIsSmartClosureOpen(true);
   };
+
+  const calculateDistanceMeters = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const R = 6371000;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLon = ((lon2 - lon1) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((lat1 * Math.PI) / 180) *
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLon / 2) *
+        Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
+
+  const colocatedIncidents = incidents.filter((other) => {
+    if (other.id === inc.id) return false;
+    if (other.status === 'resolved' || other.status === 'closed') return false;
+    const dist = calculateDistanceMeters(inc.latitude, inc.longitude, other.latitude, other.longitude);
+    return dist <= 100;
+  });
 
   return (
     <div className="fixed inset-0 z-[2000] isolate bg-black/40 backdrop-blur-xs animate-fade-in p-0 lg:p-3">
@@ -134,6 +164,380 @@ export const IncidentDetailDrawer: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {/* ========================================================= */}
+          {/* INCIDENT LOCATION VERIFICATION & AUDIT CARD             */}
+          {/* ========================================================= */}
+          <div className="bg-white rounded-xl border border-[#E5E3DC] shadow-xs overflow-hidden">
+            <div className="p-3.5 bg-[#FAF9F5] border-b border-[#E5E3DC] flex items-center justify-between text-xs">
+              <span className="font-bold text-[#191B1F] flex items-center gap-1.5">
+                <MapPin className="w-3.5 h-3.5 text-[#2C5E48]" />
+                Location Verification & Evidence Trail
+              </span>
+              <span
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold ${
+                  inc.locationVerificationStatus === 'VERIFIED'
+                    ? 'bg-[#EBF7EF] text-[#1E6B42] border border-[#C8EAD4]'
+                    : inc.locationVerificationStatus === 'UNDER_CONSIDERATION'
+                    ? 'bg-[#FDF6EC] text-[#C88427] border border-[#F9E8CE]'
+                    : 'bg-[#FDF0ED] text-[#C54E38] border border-[#F8D2CA]'
+                }`}
+              >
+                {inc.locationVerificationStatus === 'VERIFIED' ? (
+                  <>
+                    <CheckCircle2 className="w-3 h-3" />
+                    VERIFIED ({inc.locationVerificationScore ?? 85}%)
+                  </>
+                ) : inc.locationVerificationStatus === 'UNDER_CONSIDERATION' ? (
+                  <>
+                    <Clock className="w-3 h-3" />
+                    UNDER CONSIDERATION ({inc.locationVerificationScore ?? 60}%)
+                  </>
+                ) : (
+                  <>
+                    <AlertTriangle className="w-3 h-3" />
+                    REJECTED ({inc.locationVerificationScore ?? 0}%)
+                  </>
+                )}
+              </span>
+            </div>
+
+            <div className="p-4 space-y-3.5">
+              {/* Dual Location Coordinates Breakdown */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Incident Location */}
+                <div className="p-3 rounded-lg bg-[#FAF9F5] border border-[#E5E3DC]">
+                  <div className="text-[10px] font-bold text-[#7E8592] uppercase tracking-wider flex items-center gap-1">
+                    <MapPin className="w-3 h-3 text-[#2C5E48]" />
+                    Incident Location (Issue Site)
+                  </div>
+                  <div className="font-mono font-bold text-xs text-[#191B1F] mt-1">
+                    {(inc.incidentLatitude ?? inc.latitude).toFixed(6)}, {(inc.incidentLongitude ?? inc.longitude).toFixed(6)}
+                  </div>
+                  <div className="text-[11px] text-[#565C68] mt-0.5">
+                    Sector: <b>{inc.sector}</b>
+                    {inc.userDeclaredAddress && (
+                      <span className="block text-[#7E8592] text-[10px] truncate">
+                        "{inc.userDeclaredAddress}"
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-2">
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-white border border-[#E5E3DC] text-[#2C5E48]">
+                      {inc.locationSource === 'EXIF_GPS'
+                        ? '📸 Photo EXIF GPS'
+                        : '👤 Citizen Declared'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Submission Location */}
+                <div className="p-3 rounded-lg bg-[#FAF9F5] border border-[#E5E3DC]">
+                  <div className="text-[10px] font-bold text-[#7E8592] uppercase tracking-wider flex items-center gap-1">
+                    <Crosshair className="w-3 h-3 text-[#565C68]" />
+                    Submission Location (Citizen GPS)
+                  </div>
+                  <div className="font-mono font-bold text-xs text-[#191B1F] mt-1">
+                    {inc.submissionLatitude !== undefined && inc.submissionLatitude !== null && inc.submissionLongitude !== undefined && inc.submissionLongitude !== null
+                      ? `${inc.submissionLatitude.toFixed(6)}, ${inc.submissionLongitude.toFixed(6)}`
+                      : 'Remote / Device GPS unlinked'}
+                  </div>
+                  <div className="text-[11px] text-[#565C68] mt-0.5">
+                    {inc.distanceIncidentSubmissionKm !== undefined && inc.distanceIncidentSubmissionKm !== null ? (
+                      <span>
+                        Distance to incident:{' '}
+                        <b>{inc.distanceIncidentSubmissionKm.toFixed(2)} km</b>
+                      </span>
+                    ) : (
+                      <span className="text-[#7E8592] italic">GPS not available at submission</span>
+                    )}
+                  </div>
+                  <div className="mt-2">
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-white border border-[#E5E3DC] text-[#565C68]">
+                      {inc.distanceIncidentSubmissionKm !== undefined && inc.distanceIncidentSubmissionKm !== null && inc.distanceIncidentSubmissionKm <= 0.5
+                        ? '📍 On-site submission'
+                        : '🏠 Remote submission (e.g. from home)'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Evidence Timeline & Metadata Audit Trail */}
+              <div className="p-3 rounded-lg bg-white border border-[#E5E3DC]">
+                <span className="text-[10px] font-bold text-[#7E8592] uppercase tracking-wider block mb-2">
+                  Temporal & Spatial Evidence Audit
+                </span>
+                <div className="space-y-1.5 text-xs text-[#565C68]">
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <Camera className="w-3 h-3 text-[#7E8592]" />
+                      Photo Capture Time:
+                    </span>
+                    <span className="font-mono text-[#191B1F]">
+                      {inc.photoCaptureTimestamp
+                        ? new Date(inc.photoCaptureTimestamp).toLocaleString()
+                        : 'Metadata timestamp stripped'}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <Clock className="w-3 h-3 text-[#7E8592]" />
+                      Report Submission Time:
+                    </span>
+                    <span className="font-mono text-[#191B1F]">
+                      {new Date(inc.reportedAt).toLocaleString()}
+                    </span>
+                  </div>
+
+                  {inc.cameraDevice && (
+                    <div className="flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">
+                        <Camera className="w-3 h-3 text-[#7E8592]" />
+                        Capturing Device:
+                      </span>
+                      <span className="font-mono text-[#191B1F] text-[11px]">
+                        {inc.cameraDevice}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Decision Explanation Note */}
+              <div
+                className={`p-2.5 rounded-lg text-xs leading-relaxed ${
+                  inc.locationVerificationStatus === 'VERIFIED'
+                    ? 'bg-[#EBF7EF] text-[#1E6B42] border border-[#C8EAD4]'
+                    : inc.locationVerificationStatus === 'UNDER_CONSIDERATION'
+                    ? 'bg-[#FDF6EC] text-[#C88427] border border-[#F9E8CE]'
+                    : 'bg-[#FDF0ED] text-[#C54E38] border border-[#F8D2CA]'
+                }`}
+              >
+                {inc.locationVerificationStatus === 'VERIFIED' ? (
+                  <span>
+                    ✓ <b>Location Authenticated:</b> Incident coordinates confirmed via{' '}
+                    {inc.locationSource === 'EXIF_GPS'
+                      ? 'hardware camera GPS tags in original image evidence'
+                      : 'verified municipal ward mapping and consistent signal fusion'}
+                    . Expedited for field team assignment.
+                  </span>
+                ) : inc.locationVerificationStatus === 'UNDER_CONSIDERATION' ? (
+                  <span>
+                    ⏳ <b>Under Consideration:</b> Photo submitted remotely without authoritative GPS tags. Held for municipal desk validation before field crew dispatch.
+                  </span>
+                ) : (
+                  <span>
+                    ✕ <b>Verification Insufficient:</b> Report location could not be established with minimum threshold (&lt;50%).
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* ========================================================= */}
+          {/* CO-LOCATED ACTIVE ISSUES (SAME LOCATION ≠ SAME COMPLAINT) */}
+          {/* ========================================================= */}
+          <div className="bg-white rounded-xl border border-[#E5E3DC] shadow-xs overflow-hidden">
+            <div className="p-3.5 bg-[#FAF9F5] border-b border-[#E5E3DC] flex items-center justify-between text-xs">
+              <span className="font-bold text-[#191B1F] flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5 text-[#2C5E48]" />
+                Co-located Civic Issues at this Location
+              </span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-[#EBF7EF] text-[#1E6B42] border border-[#C8EAD4]">
+                {colocatedIncidents.length > 0
+                  ? `${colocatedIncidents.length + 1} distinct issues active here`
+                  : '1 issue at this site'}
+              </span>
+            </div>
+
+            <div className="p-4 space-y-3">
+              <div className="p-3 rounded-lg bg-[#FAF9F5] border border-[#E5E3DC] text-xs text-[#565C68] leading-relaxed">
+                <p className="font-semibold text-[#191B1F] flex items-center gap-1 mb-1">
+                  <ShieldCheck className="w-3.5 h-3.5 text-[#2C5E48]" />
+                  Core Municipal Rule: Same location does NOT mean same complaint
+                </p>
+                <p>
+                  Multiple distinct civic problems can and do exist at the same geographic coordinate.
+                  Each issue is registered as an independent complaint, routed to its dedicated municipal department, and resolved through its own lifecycle.
+                </p>
+              </div>
+
+              {colocatedIncidents.length > 0 ? (
+                <div className="space-y-2.5">
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-[#7E8592]">
+                    Other Active Complaints at this Coordinate ({colocatedIncidents.length}):
+                  </div>
+                  {colocatedIncidents.map((other) => (
+                    <div
+                      key={other.id}
+                      className="p-3 rounded-xl border border-[#E5E3DC] hover:border-[#2C5E48] hover:shadow-xs transition-all bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-[10px] font-mono font-bold text-[#565C68] bg-[#F4F3EF] px-1.5 py-0.5 rounded border border-[#E5E3DC]">
+                            {other.ticketNumber}
+                          </span>
+                          <CategoryBadge category={other.category} />
+                          <StatusBadge status={other.status} />
+                          <span className="text-[11px] font-mono text-[#7E8592]">
+                            Risk: <b className={other.riskScore >= 75 ? 'text-[#C54E38]' : other.riskScore >= 50 ? 'text-[#C88427]' : 'text-[#1E6B42]'}>{other.riskScore}</b>
+                          </span>
+                        </div>
+                        <h4 className="text-xs font-bold text-[#191B1F] line-clamp-1">
+                          {other.title}
+                        </h4>
+                        <div className="text-[11px] text-[#7E8592] flex items-center gap-2">
+                          <span>Dept: <b className="text-[#565C68]">{other.assignedTeam || other.sourceAttribution || 'Municipal Dept'}</b></span>
+                          <span>&bull;</span>
+                          <span>Reports: <b>{other.confidenceEvidence.relatedReportsCount}</b></span>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => selectIncident(other.id, true)}
+                        className="px-3 py-1.5 rounded-lg bg-[#F4F3EF] hover:bg-[#2C5E48] hover:text-white text-[#191B1F] text-xs font-bold transition-all shrink-0 flex items-center justify-center gap-1"
+                      >
+                        <span>Inspect Issue</span>
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-xs text-[#7E8592] italic py-1">
+                  No other active civic complaints are currently open at this exact coordinate.
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ========================================================= */}
+          {/* CONNECTED INFRASTRUCTURE ASSET (CIVIC DNA)                */}
+          {/* ========================================================= */}
+          {(() => {
+            const linkedAsset = inc.associatedAssetId
+              ? assets.find((a) => a.assetId === inc.associatedAssetId)
+              : null;
+            const nearbyAssets = !linkedAsset
+              ? getNearbyAssets(inc.latitude, inc.longitude, 100)
+              : [];
+            const candidateAsset = nearbyAssets[0] || null;
+
+            return (
+              <div className="p-4 rounded-xl bg-white border border-amber-200/80 shadow-xs space-y-3">
+                <div className="flex items-center justify-between pb-2 border-b border-stone-200">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-amber-600" />
+                    <h3 className="text-xs font-bold text-stone-900 uppercase tracking-wider font-mono">
+                      Civic DNA Persistent Asset
+                    </h3>
+                  </div>
+                  {linkedAsset ? (
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3" />
+                      Associated
+                    </span>
+                  ) : candidateAsset ? (
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                      Proximity Candidate
+                    </span>
+                  ) : null}
+                </div>
+
+                {linkedAsset ? (
+                  <div className="space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-mono text-xs font-bold text-stone-900 bg-stone-100 px-1.5 py-0.5 rounded">
+                            #{linkedAsset.assetId}
+                          </span>
+                          <span className="text-xs font-semibold text-stone-800">
+                            {linkedAsset.assetName}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-stone-500 mt-1 flex items-center gap-2">
+                          <span>{linkedAsset.department}</span>
+                          <span>&bull;</span>
+                          <span className="font-mono text-emerald-700 font-semibold">
+                            {inc.associatedAssetDistanceMeters || 18}m from complaint coordinate
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="text-right shrink-0">
+                        <div className="text-[10px] text-stone-400 font-mono">Health Score</div>
+                        <div
+                          className={`text-sm font-mono font-bold ${
+                            linkedAsset.currentHealthScore >= 75
+                              ? 'text-emerald-700'
+                              : linkedAsset.currentHealthScore >= 60
+                              ? 'text-amber-700'
+                              : 'text-red-700'
+                          }`}
+                        >
+                          {linkedAsset.currentHealthScore}/100
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="p-2.5 rounded-lg bg-stone-50 border border-stone-200 text-xs space-y-1">
+                      <div className="flex justify-between">
+                        <span className="text-stone-500">Failure Recurrence:</span>
+                        <span className="font-mono font-bold text-stone-800">
+                          {linkedAsset.failureCount} recorded failures ({linkedAsset.ageYears}y old)
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-stone-500">Recommendation:</span>
+                        <span className="font-bold text-amber-900">
+                          {linkedAsset.recommendation.title}
+                        </span>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        setIsDetailOpen(false);
+                        openAssetProfile(linkedAsset.assetId);
+                      }}
+                      className="w-full py-2 px-3 rounded-lg bg-stone-900 hover:bg-stone-800 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors shadow-xs"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                      <span>Inspect Complete Civic DNA Profile & Lifecycle →</span>
+                    </button>
+                  </div>
+                ) : candidateAsset ? (
+                  <div className="space-y-3 text-xs">
+                    <p className="text-stone-600">
+                      Nearby municipal fixture detected within 100m radius of this incident:
+                    </p>
+                    <div className="p-3 bg-stone-50 rounded-lg border border-stone-200 flex items-center justify-between">
+                      <div>
+                        <div className="font-semibold text-stone-900">
+                          {candidateAsset.assetName} (#{candidateAsset.assetId})
+                        </div>
+                        <div className="text-[11px] text-stone-500 mt-0.5">
+                          {candidateAsset.department} &bull; Health: {candidateAsset.currentHealthScore}/100
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => associateComplaintWithAsset(inc.id, candidateAsset.assetId)}
+                        className="px-2.5 py-1.5 rounded-lg bg-[#2C5E48] hover:bg-[#1E4333] text-white font-semibold text-xs transition-colors shrink-0"
+                      >
+                        Link to Asset
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-xs text-stone-500 italic">
+                    No physical asset within 100m proximity. Asset will be mapped upon field survey.
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* ========================================================= */}
           {/* SANKET INTELLIGENCE SECTION                              */}

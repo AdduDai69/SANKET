@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import L from 'leaflet';
-import { Incident, IncidentStatus, IssueCategory } from '../../types/civic';
+import { Incident, IncidentStatus, IssueCategory, CivicDnaAsset } from '../../types/civic';
 import { useCivic } from '../../context/CivicContext';
 
 interface CivicMapProps {
@@ -26,6 +26,12 @@ interface CivicMapProps {
 
   /** Citizen variant: fly to these coordinates when they change. */
   focusTarget?: [number, number] | null;
+
+  /** Show persistent infrastructure assets layer (Civic DNA) */
+  showAssets?: boolean;
+
+  /** Optional pre-filtered assets list (e.g. from MapView) */
+  assets?: CivicDnaAsset[];
 }
 
 /* ---------------- Citizen presentation layer (public info only) ---------------- */
@@ -113,12 +119,16 @@ export const CivicMap: React.FC<CivicMapProps> = ({
   onIssueClick,
   userLocation = null,
   focusTarget = null,
+  showAssets = true,
+  assets: propAssets,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersRef = useRef<{ [id: string]: L.Marker }>({});
+  const assetMarkersRef = useRef<{ [id: string]: L.Marker }>({});
 
-  const { selectIncident } = useCivic();
+  const { selectIncident, assets: contextAssets, openAssetProfile, selectedAssetId } = useCivic();
+  const assets = propAssets !== undefined ? propAssets : contextAssets;
 
   /*
    * Read the CARTO API key exactly once.
@@ -229,12 +239,30 @@ L.tileLayer(
     /* ---------------- Clear old markers ---------------- */
 
     Object.values(markersRef.current).forEach((marker) => marker.remove());
-
     markersRef.current = {};
+
+    Object.values(assetMarkersRef.current).forEach((marker) => marker.remove());
+    assetMarkersRef.current = {};
 
     /* ---------------- Render incident markers ---------------- */
 
     incidents.forEach((inc) => {
+      // Co-location detection for coordinate micro-offsetting and badge display
+      // Ensures multiple distinct issues at identical coordinates don't completely occlude
+      const coordKey = `${inc.latitude.toFixed(4)}_${inc.longitude.toFixed(4)}`;
+      const colocatedGroup = incidents.filter(
+        (o) => `${o.latitude.toFixed(4)}_${o.longitude.toFixed(4)}` === coordKey
+      );
+      const groupIdx = colocatedGroup.findIndex((o) => o.id === inc.id);
+      let displayLat = inc.latitude;
+      let displayLng = inc.longitude;
+      if (colocatedGroup.length > 1 && groupIdx >= 0) {
+        const angle = (2 * Math.PI * groupIdx) / colocatedGroup.length;
+        const radius = 0.00018; // ~18 meters subtle offset so all co-located markers are visible and clickable
+        displayLat = inc.latitude + radius * Math.cos(angle);
+        displayLng = inc.longitude + (radius / Math.cos((inc.latitude * Math.PI) / 180)) * Math.sin(angle);
+      }
+
       if (isCitizen) {
         /* ---------------- Citizen marker ---------------- */
 
@@ -245,7 +273,29 @@ L.tileLayer(
         const size = isSelected ? 32 : 26;
 
         const iconHtml = `
-          <div style="transform: translate(-50%, -50%);">
+          <div style="transform: translate(-50%, -50%); position: relative;">
+            ${
+              colocatedGroup.length > 1
+                ? `
+                  <div style="
+                    position: absolute;
+                    top: -4px;
+                    right: -4px;
+                    background: #191B1F;
+                    color: white;
+                    border: 1.5px solid white;
+                    border-radius: 999px;
+                    font-size: 8px;
+                    font-weight: 800;
+                    padding: 0 4px;
+                    line-height: 12px;
+                    z-index: 10;
+                  ">
+                    ${colocatedGroup.length}
+                  </div>
+                `
+                : ''
+            }
             <div style="
               background-color: ${visual.color};
               border: ${
@@ -274,7 +324,7 @@ L.tileLayer(
         });
 
         const marker = L.marker(
-          [inc.latitude, inc.longitude],
+          [displayLat, displayLng],
           {
             icon: customIcon,
           }
@@ -323,6 +373,25 @@ L.tileLayer(
                   : ''
               }
             </div>
+
+            ${
+              colocatedGroup.length > 1
+                ? `
+                  <div style="
+                    margin-bottom: 8px;
+                    padding: 4px 8px;
+                    border-radius: 6px;
+                    background: #FAF9F5;
+                    border: 1px solid #E5E3DC;
+                    font-size: 10px;
+                    color: #565C68;
+                    font-weight: 600;
+                  ">
+                    📍 Co-located with ${colocatedGroup.length - 1} other issue${colocatedGroup.length > 2 ? 's' : ''} here (tracked separately)
+                  </div>
+                `
+                : ''
+            }
 
             <div style="
               display: inline-flex;
@@ -415,6 +484,29 @@ L.tileLayer(
           class="relative group cursor-pointer"
           style="transform: translate(-50%, -50%);"
         >
+          ${
+            colocatedGroup.length > 1
+              ? `
+                <div style="
+                  position: absolute;
+                  top: -5px;
+                  right: -5px;
+                  background: #191B1F;
+                  color: white;
+                  border: 1.5px solid white;
+                  border-radius: 999px;
+                  font-size: 8px;
+                  font-weight: 800;
+                  padding: 0 4px;
+                  line-height: 12px;
+                  z-index: 10;
+                  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+                ">
+                  ${colocatedGroup.length}
+                </div>
+              `
+              : ''
+          }
 
           ${
             inc.isRecurring
@@ -475,7 +567,7 @@ L.tileLayer(
       });
 
       const marker = L.marker(
-        [inc.latitude, inc.longitude],
+        [displayLat, displayLng],
         {
           icon: customIcon,
         }
@@ -545,6 +637,25 @@ L.tileLayer(
           ">
             ${inc.location}
           </div>
+
+          ${
+            colocatedGroup.length > 1
+              ? `
+                <div style="
+                  margin-bottom: 8px;
+                  padding: 4px 8px;
+                  border-radius: 6px;
+                  background: #FAF9F5;
+                  border: 1px solid #E5E3DC;
+                  font-size: 10px;
+                  color: #565C68;
+                  font-weight: 600;
+                ">
+                  📍 Co-located: ${colocatedGroup.length} distinct complaints active at this coordinate
+                </div>
+              `
+              : ''
+          }
 
           <div style="
             display: flex;
@@ -624,6 +735,106 @@ L.tileLayer(
       markersRef.current[inc.id] = marker;
     });
 
+    /* ---------------- Render Civic DNA Asset Markers (Admin mode) ---------------- */
+
+    if (!isCitizen && showAssets && assets && assets.length > 0) {
+      assets.forEach((asset) => {
+        const isSelected = selectedAssetId === asset.assetId;
+        const health = asset.currentHealthScore;
+        const color = health >= 75 ? '#1E6B42' : health >= 60 ? '#C88427' : '#C54E38';
+        const bgSoft = health >= 75 ? '#E9F4ED' : health >= 60 ? '#FDF6EC' : '#FDF0ED';
+
+        const assetIconHtml = `
+          <div style="transform: translate(-50%, -50%); cursor: pointer;">
+            <div style="
+              background-color: ${bgSoft};
+              border: ${isSelected ? '2.5px solid #191B1F' : `2px solid ${color}`};
+              width: 26px;
+              height: 26px;
+              border-radius: 6px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+              font-size: 12px;
+            ">
+              ${
+                asset.assetType === 'streetlight'
+                  ? '💡'
+                  : asset.assetType === 'drainage'
+                  ? '💧'
+                  : asset.assetType === 'waste'
+                  ? '🗑️'
+                  : '🛣️'
+              }
+            </div>
+          </div>
+        `;
+
+        const customIcon = L.divIcon({
+          html: assetIconHtml,
+          className: 'civic-asset-marker',
+          iconSize: [26, 26],
+          iconAnchor: [13, 13],
+        });
+
+        const marker = L.marker([asset.latitude, asset.longitude], { icon: customIcon });
+
+        const popupHtml = `
+          <div style="font-family: sans-serif; font-size: 12px; line-height: 1.4; padding: 2px; min-width: 220px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+              <span style="font-family: monospace; font-weight: bold; font-size: 11px; background: #f3f4f6; padding: 2px 5px; border-radius: 4px;">#${
+                asset.assetId
+              }</span>
+              <span style="font-family: monospace; font-weight: bold; font-size: 10px; color: ${color}; background: ${bgSoft}; padding: 2px 6px; border-radius: 9999px;">Health: ${
+          asset.currentHealthScore
+        }/100</span>
+            </div>
+            <div style="font-weight: bold; font-size: 13px; color: #111827; margin-bottom: 2px;">${
+              asset.assetName
+            }</div>
+            <div style="color: #6b7280; font-size: 11px; margin-bottom: 6px;">${
+              asset.location
+            } &bull; ${asset.department}</div>
+            <div style="background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 6px; font-size: 11px; margin-bottom: 8px;">
+              <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                <span style="color: #6b7280;">Spent to date:</span>
+                <span style="font-family: monospace; font-weight: bold;">₹${asset.totalMaintenanceCost.toLocaleString(
+                  'en-IN'
+                )}</span>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: #6b7280;">Advice:</span>
+                <span style="font-weight: bold; color: ${
+                  asset.recommendation.action.startsWith('REPLACE')
+                    ? '#b45309'
+                    : '#15803d'
+                }">${asset.recommendation.action.replace('_', ' ')}</span>
+              </div>
+            </div>
+            <button id="dna-btn-${
+              asset.assetId
+            }" style="width: 100%; background: #18181b; color: white; border: none; border-radius: 6px; padding: 6px 10px; font-weight: 600; font-size: 11px; cursor: pointer;">
+              View Civic DNA Profile →
+            </button>
+          </div>
+        `;
+
+        marker.bindPopup(popupHtml, { maxWidth: 280 });
+        marker.on('popupopen', () => {
+          const btn = document.getElementById(`dna-btn-${asset.assetId}`);
+          if (btn) {
+            btn.onclick = () => {
+              openAssetProfile(asset.assetId);
+            };
+          }
+        });
+
+        marker.addTo(map);
+        assetMarkersRef.current[asset.assetId] = marker;
+      });
+    }
+
     /* ---------------- Selected incident ---------------- */
 
     if (
@@ -649,11 +860,15 @@ L.tileLayer(
     }
   }, [
     incidents,
+    assets,
+    showAssets,
     selectedIncidentId,
+    selectedAssetId,
     variant,
     userLocationKey,
     onSelectIncident,
     selectIncident,
+    openAssetProfile,
     cartoApiKey,
   ]);
 

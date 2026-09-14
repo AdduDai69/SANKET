@@ -95,7 +95,7 @@ export const MyReportCard: React.FC<{
   /** Optional explanation rendered INSIDE the card, under a divider. */
   detail?: React.ReactNode;
 }> = ({ incident, onOpen, detail }) => {
-  const status = CITIZEN_STATUS[incident.status];
+  const status = CITIZEN_STATUS[incident.status] || CITIZEN_STATUS.reported;
   return (
     <div className="citizen-my-report">
       <button
