@@ -98,6 +98,7 @@ interface BackendIncident {
 
   /* ---------------- Smart Closure ---------------- */
 
+  image_url?: string | null;
   before_image_url?: string | null;
   before_photo?: string | null;
 
@@ -358,9 +359,6 @@ interface CivicContextType {
 
   addIncident:
     (incident: Incident) => void;
-
-  refreshIncidents:
-    () => Promise<void>;
 
   syncOfflineQueue:
     () => void;
@@ -2882,7 +2880,6 @@ export const CivicProvider:
 
         submitCitizenReport,
         addIncident,
-        refreshIncidents,
 
         syncOfflineQueue,
 

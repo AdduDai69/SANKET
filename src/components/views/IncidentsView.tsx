@@ -18,7 +18,7 @@ import {
   Eye,
   SlidersHorizontal
 } from 'lucide-react';
-import { IssueCategory, IncidentStatus } from '../../types/civic';
+import { IssueCategory, IncidentStatus, Incident } from '../../types/civic';
 
 export const IncidentsView: React.FC = () => {
   const {

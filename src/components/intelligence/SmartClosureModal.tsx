@@ -49,7 +49,7 @@ export const SmartClosureModal:
 
   const isMatchVerified = Boolean(
     closure?.isLikelyMatch ||
-    (typeof closure?.matchScore === 'number' && closure.matchScore >= 70) ||
+    (typeof closure?.matchConfidence === 'number' && closure.matchConfidence >= 70) ||
     Boolean(afterPhotoUrl)
   );
 
