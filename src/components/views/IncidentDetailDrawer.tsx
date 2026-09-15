@@ -49,6 +49,7 @@ export const IncidentDetailDrawer: React.FC = () => {
     associateComplaintWithAsset,
     getNearbyAssets,
     selectIncident,
+    completeIncident,
   } = useCivic();
 
   if (!isDetailOpen || !selectedIncident) return null;
@@ -164,6 +165,110 @@ export const IncidentDetailDrawer: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {/* ========================================================= */}
+          {/* ASSIGNMENT DETAILS CARD                                   */}
+          {/* ========================================================= */}
+          {(() => {
+            const assignedDept = inc.assignedDepartment || inc.department || 'Electrical';
+            const isAssigned = Boolean(
+              inc.assignedWorkerId &&
+              inc.assignedWorkerId !== 'Unassigned' &&
+              inc.assignedWorkerId !== 'None'
+            );
+            const workerDisplay = isAssigned
+              ? `${inc.assignedWorkerId} — ${inc.assignedWorkerName || 'Field Worker'}`
+              : 'Unassigned';
+
+            const formatAssignmentDate = (iso?: string | null) => {
+              if (!iso) return '—';
+              try {
+                const d = new Date(iso);
+                if (isNaN(d.getTime())) return '—';
+                return d.toLocaleString('en-GB', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  hour12: true,
+                });
+              } catch {
+                return '—';
+              }
+            };
+
+            const assignedOnDisplay = isAssigned
+              ? formatAssignmentDate(inc.assignedAt || inc.reportedAt)
+              : '—';
+            const assignmentStatusDisplay = isAssigned
+              ? (inc.assignmentStatus || 'Assigned')
+              : 'Awaiting Worker';
+
+            return (
+              <div className="bg-white rounded-xl border border-[#E5E3DC] shadow-xs overflow-hidden">
+                <div className="p-3.5 bg-[#FAF9F5] border-b border-[#E5E3DC] flex items-center justify-between text-xs">
+                  <span className="font-bold text-[#191B1F] flex items-center gap-1.5 uppercase tracking-wider text-[11px]">
+                    <UserCheck className="w-3.5 h-3.5 text-[#2C5E48]" />
+                    ASSIGNMENT DETAILS
+                  </span>
+                  <span
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold ${
+                      isAssigned
+                        ? 'bg-[#EBF7EF] text-[#1E6B42] border border-[#C8EAD4]'
+                        : 'bg-[#FDF6EC] text-[#C88427] border border-[#F9E8CE]'
+                    }`}
+                  >
+                    {isAssigned ? (
+                      <>
+                        <CheckCircle2 className="w-3 h-3" />
+                        {assignmentStatusDisplay}
+                      </>
+                    ) : (
+                      <>
+                        <Clock className="w-3 h-3" />
+                        {assignmentStatusDisplay}
+                      </>
+                    )}
+                  </span>
+                </div>
+                <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
+                  <div className="p-3 rounded-lg bg-[#FAF9F5] border border-[#E5E3DC]">
+                    <span className="text-[10px] font-bold text-[#7E8592] uppercase tracking-wider block">
+                      Department
+                    </span>
+                    <span className="font-bold text-sm text-[#191B1F] mt-1 block">
+                      {assignedDept}
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-lg bg-[#FAF9F5] border border-[#E5E3DC]">
+                    <span className="text-[10px] font-bold text-[#7E8592] uppercase tracking-wider block">
+                      Assigned Worker
+                    </span>
+                    <span className="font-bold text-sm text-[#191B1F] mt-1 block font-mono">
+                      {workerDisplay}
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-lg bg-[#FAF9F5] border border-[#E5E3DC]">
+                    <span className="text-[10px] font-bold text-[#7E8592] uppercase tracking-wider block">
+                      Assigned On
+                    </span>
+                    <span className="font-semibold text-xs text-[#565C68] mt-1 block font-mono">
+                      {assignedOnDisplay}
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-lg bg-[#FAF9F5] border border-[#E5E3DC]">
+                    <span className="text-[10px] font-bold text-[#7E8592] uppercase tracking-wider block">
+                      Status
+                    </span>
+                    <span className="font-bold text-xs text-[#191B1F] mt-1 block">
+                      {assignmentStatusDisplay}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* ========================================================= */}
           {/* INCIDENT LOCATION VERIFICATION & AUDIT CARD             */}
@@ -751,23 +856,167 @@ export const IncidentDetailDrawer: React.FC = () => {
               </div>
             </div>
 
-            {/* 5. SMART CLOSURE MATCH (If completed or available) */}
-            {inc.afterImageUrl && (
-              <div className="p-4 rounded-xl bg-[#EBF7EF] border border-[#C8EAD4] flex items-center justify-between">
-                <div>
-                  <span className="text-xs font-bold text-[#1E6B42] uppercase tracking-wider block">
-                    SANKET Smart Closure Match
-                  </span>
-                  <p className="text-xs text-[#1E6B42] mt-0.5">
-                    {inc.smartClosure?.matchConfidence || 96}% Likely Match • {inc.smartClosure?.distanceMeters || 8}m away
-                  </p>
+            {/* 5. RESOLUTION EVIDENCE & CONDITION VERIFICATION */}
+            {(inc.beforePhoto || inc.beforeImageUrl || inc.afterPhoto || inc.afterImageUrl || inc.status === 'resolved' || inc.status === 'closed' || inc.completedAt) && (
+              <div className="p-4 rounded-xl bg-white border border-[#E5E3DC] shadow-xs space-y-3">
+                <div className="flex items-center justify-between border-b border-[#F4F3EF] pb-2.5">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-[#1E6B42]" />
+                    <span className="text-xs font-bold uppercase tracking-wider text-[#191B1F]">
+                      Task Resolution & Evidence
+                    </span>
+                  </div>
+                  {inc.completedAt ? (
+                    <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-[#EBF7EF] text-[#1E6B42] font-semibold flex items-center gap-1">
+                      <Clock className="w-3 h-3" />
+                      Completed: {new Date(inc.completedAt).toLocaleString(undefined, {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })}
+                    </span>
+                  ) : inc.smartClosure?.inspectedAt ? (
+                    <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-[#EBF7EF] text-[#1E6B42] font-semibold flex items-center gap-1">
+                      <Clock className="w-3 h-3" />
+                      Inspected: {new Date(inc.smartClosure.inspectedAt).toLocaleString(undefined, {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })}
+                    </span>
+                  ) : inc.status === 'resolved' || inc.status === 'closed' || inc.assignmentStatus === 'Completed' ? (
+                    <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-[#FAF9F5] text-[#7E8592]">
+                      Resolved
+                    </span>
+                  ) : (
+                    <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-[#FDF0ED] text-[#C54E38]">
+                      In Progress
+                    </span>
+                  )}
                 </div>
-                <button
-                  onClick={openSmartClosure}
-                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-[#1E6B42] text-white hover:bg-[#185333] transition-colors shadow-xs"
-                >
-                  Verify Closure
-                </button>
+
+                {/* 2-Column Before & After Display */}
+                <div className="grid grid-cols-2 gap-3">
+                  {/* Before Photo - Original Condition */}
+                  <div className="p-2.5 rounded-lg bg-[#FAF9F5] border border-[#E5E3DC] flex flex-col justify-between">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[11px] font-bold text-[#191B1F] flex items-center gap-1">
+                        <Camera className="w-3 h-3 text-[#7E8592]" />
+                        Before Repair
+                      </span>
+                      <span className="text-[9px] uppercase px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 font-semibold border border-amber-200">
+                        Original
+                      </span>
+                    </div>
+
+                    {(inc.beforePhoto || inc.beforeImageUrl) ? (
+                      <div className="relative group overflow-hidden rounded-md border border-[#E5E3DC] bg-black/5">
+                        <img
+                          src={inc.beforePhoto || inc.beforeImageUrl}
+                          alt="Before Repair - Original Condition"
+                          className="w-full h-28 object-cover transition-transform group-hover:scale-105"
+                        />
+                        <a
+                          href={inc.beforePhoto || inc.beforeImageUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white text-[11px] font-semibold gap-1"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" /> View Full
+                        </a>
+                      </div>
+                    ) : (
+                      <div className="h-28 rounded-md border border-dashed border-[#D5D3CC] flex flex-col items-center justify-center text-[#7E8592] bg-white text-center p-2">
+                        <Camera className="w-5 h-5 text-[#A0A5B0] mb-1" />
+                        <span className="text-[10px]">No before photo uploaded</span>
+                      </div>
+                    )}
+                    <p className="text-[10px] text-[#7E8592] mt-1.5 line-clamp-1">
+                      Original condition when issue was assigned
+                    </p>
+                  </div>
+
+                  {/* After Photo - Post-Resolution Condition */}
+                  <div className="p-2.5 rounded-lg bg-[#FAF9F5] border border-[#E5E3DC] flex flex-col justify-between">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[11px] font-bold text-[#191B1F] flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3 text-[#1E6B42]" />
+                        After Repair
+                      </span>
+                      <span className={`text-[9px] uppercase px-1.5 py-0.5 rounded font-semibold border ${
+                        (inc.afterPhoto || inc.afterImageUrl)
+                          ? 'bg-[#EBF7EF] text-[#1E6B42] border-[#C8EAD4]'
+                          : 'bg-[#F4F3EF] text-[#7E8592] border-[#E5E3DC]'
+                      }`}>
+                        {(inc.afterPhoto || inc.afterImageUrl) ? 'Resolved' : 'Pending'}
+                      </span>
+                    </div>
+
+                    {(inc.afterPhoto || inc.afterImageUrl) ? (
+                      <div className="relative group overflow-hidden rounded-md border border-[#C8EAD4] bg-black/5">
+                        <img
+                          src={inc.afterPhoto || inc.afterImageUrl}
+                          alt="After Repair - Post-Resolution Condition"
+                          className="w-full h-28 object-cover transition-transform group-hover:scale-105"
+                        />
+                        <a
+                          href={inc.afterPhoto || inc.afterImageUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white text-[11px] font-semibold gap-1"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" /> View Full
+                        </a>
+                      </div>
+                    ) : (
+                      <div className="h-28 rounded-md border border-dashed border-[#D5D3CC] flex flex-col items-center justify-center text-[#7E8592] bg-white text-center p-2">
+                        <Clock className="w-5 h-5 text-[#A0A5B0] mb-1" />
+                        <span className="text-[10px]">Pending repair completion</span>
+                      </div>
+                    )}
+                    <p className="text-[10px] text-[#7E8592] mt-1.5 line-clamp-1">
+                      Post-resolution condition submitted by field worker
+                    </p>
+                  </div>
+                </div>
+
+                {/* Smart Match Banner if after photo available */}
+                {(inc.afterPhoto || inc.afterImageUrl) && (
+                  <div className="p-3 rounded-lg bg-[#EBF7EF] border border-[#C8EAD4] flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-bold text-[#1E6B42] uppercase tracking-wider block">
+                        SANKET Smart Closure Match
+                      </span>
+                      <p className="text-xs text-[#1E6B42] mt-0.5">
+                        {inc.smartClosure?.matchConfidence || 96}% Likely Match • {inc.smartClosure?.distanceMeters || 8}m away
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {inc.status !== 'resolved' && inc.status !== 'closed' && inc.assignmentStatus !== 'Completed' ? (
+                        <button
+                          onClick={() => completeIncident(inc.id, inc.afterPhoto || inc.afterImageUrl, inc.beforePhoto || inc.beforeImageUrl)}
+                          className="px-3 py-1.5 rounded-lg text-xs font-bold bg-[#1E6B42] text-white hover:bg-[#185333] transition-colors shadow-xs flex items-center gap-1"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>Complete Task</span>
+                        </button>
+                      ) : (
+                        <span className="px-2.5 py-1 rounded-lg text-xs font-bold bg-[#1E6B42]/10 text-[#1E6B42] border border-[#C8EAD4] flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>Completed</span>
+                        </span>
+                      )}
+                      <button
+                        onClick={openSmartClosure}
+                        className="px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-[#1E6B42] border border-[#C8EAD4] hover:bg-[#E5F5EB] transition-colors shadow-xs"
+                      >
+                        Match Evidence
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -777,25 +1026,38 @@ export const IncidentDetailDrawer: React.FC = () => {
         <div className="p-4 sm:p-5 border-t border-[#E5E3DC] bg-[#FAF9F5] flex flex-wrap items-center justify-between gap-3 shrink-0">
           <div className="text-xs text-[#7E8592] flex items-center gap-1.5">
             <UserCheck className="w-4 h-4 text-[#2C5E48]" />
-            <span>Assigned: <b>{inc.assignedTeam || 'Unassigned'}</b></span>
+            <span>
+              Assigned:{' '}
+              <b className="text-[#191B1F]">
+                {inc.assignedWorkerName
+                  ? `${inc.assignedWorkerId ? `${inc.assignedWorkerId} — ` : ''}${inc.assignedWorkerName}`
+                  : inc.assignedWorkerId && inc.assignedWorkerId !== 'Unassigned'
+                  ? inc.assignedWorkerId
+                  : 'Unassigned'}
+              </b>
+              {(inc.assignedDepartment || inc.department) && (
+                <span className="text-[#7E8592] ml-1">
+                  ({inc.assignedDepartment || inc.department})
+                </span>
+              )}
+            </span>
           </div>
 
           <div className="flex items-center gap-2">
-            {!inc.assignedTeam && (
+            {(inc.afterPhoto || inc.afterImageUrl || inc.status === 'needs_review') && inc.status !== 'resolved' && inc.status !== 'closed' && inc.assignmentStatus !== 'Completed' ? (
               <button
-                onClick={() => assignTeam(inc.id, 'PWD Fast Response Unit #4', 'Officer V. Sen')}
-                className="px-3.5 py-2 rounded-lg text-xs font-bold bg-[#2C5E48] text-white hover:bg-[#1E4333] transition-colors flex items-center gap-1.5 shadow-sm"
+                onClick={() => completeIncident(inc.id, inc.afterPhoto || inc.afterImageUrl, inc.beforePhoto || inc.beforeImageUrl)}
+                className="px-3.5 py-2 rounded-lg text-xs font-bold bg-[#1E6B42] text-white hover:bg-[#185333] transition-colors flex items-center gap-1.5 shadow-xs"
               >
-                <Send className="w-3.5 h-3.5" />
-                <span>Assign Team</span>
+                <CheckCircle2 className="w-3.5 h-3.5 text-white" />
+                <span>Verify & Complete Task</span>
               </button>
-            )}
-
+            ) : null}
             <button
               onClick={openSmartClosure}
-              className="px-3.5 py-2 rounded-lg text-xs font-bold bg-white text-[#191B1F] border border-[#E5E3DC] hover:bg-[#F4F3EF] transition-colors flex items-center gap-1.5"
+              className="px-3.5 py-2 rounded-lg text-xs font-bold bg-white text-[#1E6B42] border border-[#C8EAD4] hover:bg-[#E5F5EB] transition-colors flex items-center gap-1.5 shadow-xs"
             >
-              <HardHat className="w-3.5 h-3.5 text-[#C88427]" />
+              <HardHat className="w-3.5 h-3.5 text-[#1E6B42]" />
               <span>Smart Closure Match</span>
             </button>
           </div>

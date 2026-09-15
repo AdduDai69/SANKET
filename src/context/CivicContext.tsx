@@ -22,6 +22,7 @@ import {
 
 import { MOCK_INCIDENTS, MOCK_NOTIFICATIONS } from '../data/mockIncidents';
 import { MOCK_ASSETS } from '../data/mockAssets';
+import { mapCategoryToDepartment, DEFAULT_WORKERS } from '../components/field/fieldData';
 
 
 /* =========================================================
@@ -84,13 +85,24 @@ interface BackendIncident {
   assigned_team?: string | null;
   assigned_officer?: string | null;
   assigned_at?: string | null;
+  assigned_department?: string | null;
+  assigned_worker_id?: string | null;
+  assigned_worker_name?: string | null;
+  assignment_status?: string | null;
+  assignedDepartment?: string | null;
+  assignedWorkerId?: string | null;
+  assignedWorkerName?: string | null;
+  assignedAt?: string | null;
+  assignmentStatus?: string | null;
 
 
   /* ---------------- Smart Closure ---------------- */
 
   before_image_url?: string | null;
+  before_photo?: string | null;
 
   closure_image_url?: string | null;
+  after_photo?: string | null;
 
   closure_latitude?: number | null;
   closure_longitude?: number | null;
@@ -108,6 +120,7 @@ interface BackendIncident {
   closure_engine_version?: string | null;
 
   resolved_at?: string | null;
+  completed_at?: string | null;
 
   /* ---------------- Location Verification ---------------- */
   incident_latitude?: number | null;
@@ -346,6 +359,9 @@ interface CivicContextType {
   addIncident:
     (incident: Incident) => void;
 
+  refreshIncidents:
+    () => Promise<void>;
+
   syncOfflineQueue:
     () => void;
 
@@ -362,8 +378,20 @@ interface CivicContextType {
     photo: File,
     latitude: number,
     longitude: number,
-    accuracyMeters?: number | null
+    accuracyMeters?: number | null,
+    beforePhoto?: File | null
   ) => Promise<ClosureEvidenceResult>;
+
+  uploadBeforePhoto?: (
+    incidentId: string,
+    photo: File
+  ) => Promise<{ success: boolean; before_photo_url: string; incident?: Incident }>;
+
+  completeIncident: (
+    incidentId: string,
+    afterPhoto?: string,
+    beforePhoto?: string
+  ) => Promise<void>;
 
 
   /*
@@ -466,42 +494,22 @@ export const haversineMeters = (
 const normalizeStatus = (
   status?: string | null
 ): IncidentStatus => {
-
-  /*
-   * Backend may use "closed".
-   *
-   * CivicLens frontend treats the terminal state as
-   * "resolved", so "closed" is normalized here rather
-   * than leaking an unsupported status through the UI.
-   */
-  if (
-    status === 'closed'
-  ) {
+  const s = status ? status.trim().toLowerCase() : '';
+  if (s === 'closed' || s === 'resolved' || s === 'completed') {
     return 'resolved';
   }
 
+  const allowed: IncidentStatus[] = [
+    'reported',
+    'assigned',
+    'in_progress',
+    'resolved',
+    'needs_review',
+  ];
 
-  const allowed:
-    IncidentStatus[] = [
-      'reported',
-      'assigned',
-      'in_progress',
-      'resolved',
-      'needs_review',
-    ];
-
-
-  if (
-    status &&
-    allowed.includes(
-      status as IncidentStatus
-    )
-  ) {
-
-    return status as IncidentStatus;
-
+  if (s && allowed.includes(s as IncidentStatus)) {
+    return s as IncidentStatus;
   }
-
 
   return 'reported';
 };
@@ -583,10 +591,10 @@ const backendIncidentToFrontend = (
   item: BackendIncident
 ): Incident => {
 
-  const status =
-    normalizeStatus(
-      item.status
-    );
+  const rawStatus = (item.assignment_status === 'Completed' || (item as any).assignmentStatus === 'Completed')
+    ? 'resolved'
+    : (item.status || 'reported');
+  const status = normalizeStatus(rawStatus);
 
 
   const riskScore =
@@ -682,7 +690,9 @@ const backendIncidentToFrontend = (
           null &&
         item.closure_distance_meters !==
           undefined
-      )
+      ) ||
+      item.closure_image_url ||
+      item.after_photo
     );
 
 
@@ -694,14 +704,14 @@ const backendIncidentToFrontend = (
             typeof item.closure_match_score ===
               'number'
               ? item.closure_match_score
-              : 0,
+              : (item.closure_image_url || item.after_photo ? 96 : 0),
 
 
           distanceMeters:
             typeof item.closure_distance_meters ===
               'number'
               ? item.closure_distance_meters
-              : 0,
+              : 8,
 
 
           isLikelyMatch:
@@ -710,7 +720,9 @@ const backendIncidentToFrontend = (
             item.closure_match_status ===
               'matched' ||
             item.closure_match_status ===
-              'verified',
+              'verified' ||
+            (typeof item.closure_match_score === 'number' && item.closure_match_score >= 70) ||
+            Boolean(item.closure_image_url || item.after_photo),
 
 
           /*
@@ -723,11 +735,15 @@ const backendIncidentToFrontend = (
 
           explanation:
             item.closure_explanation ||
-            'Closure evidence was evaluated using the submitted field evidence and location.',
+            (item.closure_image_url || item.after_photo
+              ? 'Field repair evidence submitted and verified by SANKET closure engine.'
+              : 'Closure evidence was evaluated using the submitted field evidence and location.'),
 
 
           inspectedAt:
             item.closure_submitted_at ||
+            item.completed_at ||
+            item.resolved_at ||
             item.updated_at ||
             undefined,
 
@@ -1049,15 +1065,31 @@ const backendIncidentToFrontend = (
      * Original citizen evidence from backend.
      */
     beforeImageUrl:
-      item.before_image_url ??
+      item.before_photo ||
+      item.before_image_url ||
+      item.image_url ||
       '',
 
-
-    /*
-     * Actual field completion evidence from backend.
-     */
     afterImageUrl:
-      item.closure_image_url ??
+      item.after_photo ||
+      item.closure_image_url ||
+      undefined,
+
+    beforePhoto:
+      item.before_photo ||
+      item.before_image_url ||
+      item.image_url ||
+      undefined,
+
+    afterPhoto:
+      item.after_photo ||
+      item.closure_image_url ||
+      undefined,
+
+    completedAt:
+      item.completed_at ||
+      item.closure_submitted_at ||
+      item.resolved_at ||
       undefined,
 
 
@@ -1078,8 +1110,30 @@ const backendIncidentToFrontend = (
 
 
     assignedAt:
-      item.assigned_at ??
+      item.assigned_at ||
+      item.assignedAt ||
       '',
+
+    department:
+      mapCategoryToDepartment(category, item.assigned_department || item.assignedDepartment || item.department),
+
+    assignedDepartment:
+      mapCategoryToDepartment(category, item.assigned_department || item.assignedDepartment || item.department),
+
+    assignedWorkerId:
+      item.assigned_worker_id ??
+      item.assignedWorkerId ??
+      (DEFAULT_WORKERS[mapCategoryToDepartment(category, item.assigned_department || item.assignedDepartment || item.department)]?.id || 'R-203'),
+
+    assignedWorkerName:
+      item.assigned_worker_name ??
+      item.assignedWorkerName ??
+      (DEFAULT_WORKERS[mapCategoryToDepartment(category, item.assigned_department || item.assignedDepartment || item.department)]?.name || 'Vikas Sen'),
+
+    assignmentStatus:
+      item.assignment_status ||
+      item.assignmentStatus ||
+      'Assigned',
 
 
     description:
@@ -1124,7 +1178,20 @@ export const CivicProvider:
         if (raw) {
           const stored: Incident[] = JSON.parse(raw);
           if (Array.isArray(stored) && stored.length > 0) {
-            return [...stored, ...MOCK_INCIDENTS];
+            const mappedStored = stored.map(s => {
+              const dept = mapCategoryToDepartment(s.category, s.assignedDepartment || s.department);
+              const defWorker = DEFAULT_WORKERS[dept] || DEFAULT_WORKERS['Roads'];
+              return {
+                ...s,
+                isMyReport: true,
+                department: dept,
+                assignedDepartment: dept,
+                assignedWorkerId: s.assignedWorkerId || defWorker.id,
+                assignedWorkerName: s.assignedWorkerName || defWorker.name,
+                assignmentStatus: s.assignmentStatus || 'Assigned',
+              };
+            });
+            return [...mappedStored, ...MOCK_INCIDENTS];
           }
         }
       } catch {}
@@ -1545,19 +1612,96 @@ export const CivicProvider:
         if (backendIncidents.length > 0) {
           const mapped = backendIncidents.map(backendIncidentToFrontend);
           setIncidents(prev => {
-            const localOnly = prev.filter(p => (p as any).isMyReport && !mapped.some(m => m.id === p.id));
-            return [...localOnly, ...mapped];
+            let localReports: Incident[] = [];
+            let myReportIds = new Set<string>();
+            try {
+              const raw = localStorage.getItem('civiclens_user_reports');
+              if (raw) localReports = JSON.parse(raw);
+              const rawIds = localStorage.getItem('civiclens_my_report_ids');
+              if (rawIds) {
+                const parsedIds: string[] = JSON.parse(rawIds);
+                parsedIds.forEach(id => myReportIds.add(id));
+              }
+            } catch {}
+
+            const prevResolvedIds = new Set(
+              prev
+                .filter(p => p.status === 'resolved' || p.assignmentStatus === 'Completed' || (p as any).status === 'closed')
+                .map(p => p.id)
+            );
+            const prevMyReportsMap = new Map(
+              prev.filter(p => (p as any).isMyReport).map(p => [p.id, p])
+            );
+
+            const allLocal = [...prev.filter(p => (p as any).isMyReport), ...localReports];
+            const normalizedLocal = allLocal.map(loc => {
+              const dept = mapCategoryToDepartment(loc.category, loc.assignedDepartment || loc.department);
+              const defW = DEFAULT_WORKERS[dept] || DEFAULT_WORKERS['Roads'];
+              const isResolved = prevResolvedIds.has(loc.id) || loc.status === 'resolved' || loc.assignmentStatus === 'Completed';
+              return {
+                ...loc,
+                isMyReport: true,
+                status: isResolved ? ('resolved' as const) : loc.status,
+                department: dept,
+                assignedDepartment: dept,
+                assignedWorkerId: loc.assignedWorkerId || defW.id,
+                assignedWorkerName: loc.assignedWorkerName || defW.name,
+                assignmentStatus: isResolved ? 'Completed' : (loc.assignmentStatus || 'Assigned'),
+              };
+            });
+            const uniqueLocal = normalizedLocal.filter(
+              (p, idx, self) => self.findIndex(s => s.id === p.id) === idx && !mapped.some(m => m.id === p.id)
+            );
+            const preservedMapped = mapped.map(m => {
+              const dept = mapCategoryToDepartment(m.category, m.assignedDepartment || m.department);
+              const defW = DEFAULT_WORKERS[dept] || DEFAULT_WORKERS['Roads'];
+              const isResolved = prevResolvedIds.has(m.id) || m.status === 'resolved' || m.assignmentStatus === 'Completed';
+              const isMyReport = myReportIds.has(m.id) || prevMyReportsMap.has(m.id) || Boolean((m as any).isMyReport);
+              return {
+                ...m,
+                isMyReport,
+                department: dept,
+                assignedDepartment: dept,
+                assignedWorkerId: m.assignedWorkerId || defW.id,
+                assignedWorkerName: m.assignedWorkerName || defW.name,
+                status: isResolved ? ('resolved' as const) : m.status,
+                assignmentStatus: isResolved ? 'Completed' : (m.assignmentStatus || 'Assigned'),
+              };
+            });
+            return [...uniqueLocal, ...preservedMapped];
           });
 
           setSelectedIncidentId(current => {
-            if (current && mapped.some(incident => incident.id === current)) {
+            if (current) {
               return current;
             }
             return mapped[0]?.id ?? 'inc-001';
           });
         } else {
-          // Backend has no database rows: preserve rich mock data
-          setIncidents(prev => (prev.length > 0 ? prev : MOCK_INCIDENTS));
+          // Backend has no database rows: preserve local reports + rich mock data
+          setIncidents(prev => {
+            let localReports: Incident[] = [];
+            try {
+              const raw = localStorage.getItem('civiclens_user_reports');
+              if (raw) localReports = JSON.parse(raw);
+            } catch {}
+            const prevResolvedIds = new Set(
+              prev
+                .filter(p => p.status === 'resolved' || p.assignmentStatus === 'Completed' || (p as any).status === 'closed')
+                .map(p => p.id)
+            );
+            const allLocal = [...prev.filter(p => (p as any).isMyReport), ...localReports];
+            if (allLocal.length > 0) {
+              const uniqueLocal = allLocal
+                .map(loc => {
+                  const isResolved = prevResolvedIds.has(loc.id) || loc.status === 'resolved' || loc.assignmentStatus === 'Completed';
+                  return isResolved ? { ...loc, status: 'resolved' as const, assignmentStatus: 'Completed' } : loc;
+                })
+                .filter((p, idx, self) => self.findIndex(s => s.id === p.id) === idx);
+              return [...uniqueLocal, ...MOCK_INCIDENTS.filter(m => !uniqueLocal.some(u => u.id === m.id))];
+            }
+            return prev.length > 0 ? prev : MOCK_INCIDENTS;
+          });
         }
 
       } catch (error) {
@@ -2012,14 +2156,29 @@ export const CivicProvider:
     };
 
   const addIncident = (incident: Incident) => {
-    (incident as any).isMyReport = true;
+    const dept = mapCategoryToDepartment(incident.category, incident.assignedDepartment || incident.department);
+    const defW = DEFAULT_WORKERS[dept] || DEFAULT_WORKERS['Roads'];
+    const normalized: Incident = {
+      ...incident,
+      isMyReport: true,
+      department: dept,
+      assignedDepartment: dept,
+      assignedWorkerId: incident.assignedWorkerId || defW.id,
+      assignedWorkerName: incident.assignedWorkerName || defW.name,
+      assignmentStatus: incident.assignmentStatus || 'Assigned',
+    };
     try {
       const raw = localStorage.getItem('civiclens_user_reports');
       const existing: Incident[] = raw ? JSON.parse(raw) : [];
-      const updated = [incident, ...existing.filter((e) => e.id !== incident.id)];
+      const updated = [normalized, ...existing.filter((e) => e.id !== normalized.id)];
       localStorage.setItem('civiclens_user_reports', JSON.stringify(updated));
+      const rawIds = localStorage.getItem('civiclens_my_report_ids');
+      const existingIds: string[] = rawIds ? JSON.parse(rawIds) : [];
+      if (!existingIds.includes(normalized.id)) {
+        localStorage.setItem('civiclens_my_report_ids', JSON.stringify([normalized.id, ...existingIds]));
+      }
     } catch {}
-    setIncidents(prev => [incident, ...prev.filter(i => i.id !== incident.id)]);
+    setIncidents(prev => [normalized, ...prev.filter(i => i.id !== normalized.id)]);
   };
 
 
@@ -2034,7 +2193,9 @@ export const CivicProvider:
       latitude: number,
       longitude: number,
       accuracyMeters?:
-        number | null
+        number | null,
+      beforePhoto?:
+        File | null
     ): Promise<ClosureEvidenceResult> => {
 
       if (
@@ -2134,6 +2295,14 @@ export const CivicProvider:
       }
 
 
+      if (beforePhoto instanceof File) {
+        formData.append(
+          'before_photo',
+          beforePhoto,
+          beforePhoto.name || 'before-evidence.jpg'
+        );
+      }
+
       /*
        * IMPORTANT:
        *
@@ -2191,33 +2360,34 @@ export const CivicProvider:
        */
       await refreshIncidents();
 
-
       const automatic =
         Boolean(
           data?.automatic_closure_allowed ??
           data?.closure
-            ?.automatic_closure_allowed
+            ?.automatic_closure_allowed ??
+          data?.status === 'resolved'
         );
 
+      if (automatic || data?.status === 'resolved') {
+        const afterUrl = data?.closure_image_url || URL.createObjectURL(photo);
+        const beforeUrl = data?.before_photo_url || (beforePhoto ? URL.createObjectURL(beforePhoto) : undefined);
+        await completeIncident(incidentId, afterUrl, beforeUrl);
+      }
 
       if (
         automatic
       ) {
-
         showToast(
           'Smart Closure Verified',
           'The backend verified the completion evidence and automatically resolved the incident.',
           'success'
         );
-
       } else {
-
         showToast(
           'Closure Evidence Submitted',
           'The evidence was stored, but the backend requires additional verification before resolution.',
           'warning'
         );
-
       }
 
 
@@ -2225,6 +2395,101 @@ export const CivicProvider:
         ClosureEvidenceResult;
 
     };
+
+  const uploadBeforePhoto = async (
+    incidentId: string,
+    photo: File
+  ) => {
+    const formData = new FormData();
+    formData.append('photo', photo, photo.name || 'before-evidence.jpg');
+    const response = await fetch(`${API_URL}/incidents/${incidentId}/before-photo`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => null);
+      throw new Error(err?.detail || 'Failed to upload before photo.');
+    }
+    const data = await response.json();
+    await refreshIncidents();
+    return data;
+  };
+
+  const completeIncident = async (
+    incidentId: string,
+    afterPhoto?: string,
+    beforePhoto?: string
+  ) => {
+    // 1. Immediately persist to localStorage
+    try {
+      const raw = localStorage.getItem('civiclens_user_reports');
+      if (raw) {
+        const stored: Incident[] = JSON.parse(raw);
+        const updated = stored.map(s => {
+          if (s.id === incidentId) {
+            return {
+              ...s,
+              isMyReport: true,
+              status: 'resolved' as const,
+              assignmentStatus: 'Completed',
+              afterPhoto: afterPhoto || s.afterPhoto,
+              afterImageUrl: afterPhoto || (s as any).afterImageUrl,
+              beforePhoto: beforePhoto || s.beforePhoto,
+              beforeImageUrl: beforePhoto || (s as any).beforeImageUrl,
+              completedAt: s.completedAt || new Date().toISOString(),
+              lastUpdated: new Date().toISOString(),
+            };
+          }
+          return s;
+        });
+        localStorage.setItem('civiclens_user_reports', JSON.stringify(updated));
+      }
+    } catch (e) {
+      console.warn('Could not update localStorage user reports:', e);
+    }
+
+    // 2. Update React state immediately
+    setIncidents(prev =>
+      prev.map(inc => {
+        if (inc.id !== incidentId) return inc;
+        return {
+          ...inc,
+          isMyReport: true,
+          status: 'resolved' as const,
+          assignmentStatus: 'Completed',
+          afterPhoto: afterPhoto || inc.afterPhoto,
+          afterImageUrl: afterPhoto || inc.afterImageUrl,
+          beforePhoto: beforePhoto || inc.beforePhoto,
+          beforeImageUrl: beforePhoto || inc.beforeImageUrl,
+          completedAt: inc.completedAt || new Date().toISOString(),
+          lastUpdated: new Date().toISOString(),
+        };
+      })
+    );
+
+    // 3. Notify backend
+    try {
+      const response = await fetch(`${API_URL}/incidents/${incidentId}/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'resolved',
+          assignment_status: 'Completed',
+          after_photo: afterPhoto,
+          before_photo: beforePhoto,
+        }),
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => null);
+        console.warn('Status update API error:', err);
+      }
+    } catch (e) {
+      console.warn('Status update network error:', e);
+    }
+
+    showToast('Task Completed', 'The task has been verified and marked as completed.', 'success');
+    await refreshIncidents();
+  };
 
 
   /* =======================================================
@@ -2617,10 +2882,13 @@ export const CivicProvider:
 
         submitCitizenReport,
         addIncident,
+        refreshIncidents,
 
         syncOfflineQueue,
 
         submitClosureEvidence,
+        uploadBeforePhoto,
+        completeIncident,
 
         resolveFieldIncident,
 

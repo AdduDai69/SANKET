@@ -52,7 +52,6 @@ import {
   Info,
   Loader2,
   MapPin,
-  Mic,
   Pencil,
   Send,
   ShieldAlert,
@@ -82,6 +81,11 @@ import {
   readExifFromBlob,
   ExifLocationResult,
 } from '../../utils/exifReader';
+
+import {
+  mapCategoryToDepartment,
+  DEFAULT_WORKERS,
+} from '../field/fieldData';
 
 import { SectionHeading } from './CitizenPrimitives';
 
@@ -186,6 +190,7 @@ export const CitizenReportFlow: React.FC<{
   const {
     showToast,
     addIncident,
+    refreshIncidents,
   } = useCivic();
 
 
@@ -1251,9 +1256,10 @@ export const CitizenReportFlow: React.FC<{
         /*
          * Selected sector.
          */
+        const effectiveSector = (sector && sector.trim()) || userDeclaredAddress.trim() || 'Outside Sector Jurisdiction';
         formData.append(
           'sector',
-          sector
+          effectiveSector
         );
 
         /*
@@ -1333,7 +1339,7 @@ export const CitizenReportFlow: React.FC<{
 
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 5000);
+          const timeoutId = setTimeout(() => controller.abort(), 30000);
 
           const response =
             await fetch(
@@ -1494,8 +1500,15 @@ export const CitizenReportFlow: React.FC<{
           submissionLongitude: gpsLocation?.longitude ?? null,
           reportedAt: new Date().toISOString(),
           waitingDays: 0,
-          status: 'reported',
-          department: rawInc?.department || aiAnalysis?.recommended_department || 'Municipal Corporation',
+          status: 'assigned',
+          department: mapCategoryToDepartment(
+            issueCat,
+            data?.assignment?.assigned_department ||
+              rawInc?.assigned_department ||
+              rawInc?.assignedDepartment ||
+              rawInc?.department ||
+              aiAnalysis?.recommended_department
+          ),
           severity: 5,
           publicImpact: 5,
           locationExposure: 5,
@@ -1521,6 +1534,46 @@ export const CitizenReportFlow: React.FC<{
           sourceAttribution: 'CivicLens Citizen Report',
           lastUpdated: new Date().toISOString(),
           locationVerification: data?.location_verification,
+          assignedDepartment: mapCategoryToDepartment(
+            issueCat,
+            data?.assignment?.assigned_department ||
+              rawInc?.assigned_department ||
+              rawInc?.assignedDepartment ||
+              rawInc?.department ||
+              aiAnalysis?.recommended_department
+          ),
+          assignedWorkerId:
+            data?.assignment?.assigned_worker_id ??
+            rawInc?.assigned_worker_id ??
+            rawInc?.assignedWorkerId ??
+            DEFAULT_WORKERS[
+              mapCategoryToDepartment(
+                issueCat,
+                data?.assignment?.assigned_department ||
+                  rawInc?.assigned_department ||
+                  rawInc?.assignedDepartment ||
+                  rawInc?.department ||
+                  aiAnalysis?.recommended_department
+              )
+            ]?.id ??
+            'R-203',
+          assignedWorkerName:
+            data?.assignment?.assigned_worker_name ??
+            rawInc?.assigned_worker_name ??
+            rawInc?.assignedWorkerName ??
+            DEFAULT_WORKERS[
+              mapCategoryToDepartment(
+                issueCat,
+                data?.assignment?.assigned_department ||
+                  rawInc?.assigned_department ||
+                  rawInc?.assignedDepartment ||
+                  rawInc?.department ||
+                  aiAnalysis?.recommended_department
+              )
+            ]?.name ??
+            'Vikas Sen',
+          assignedAt: data?.assignment?.assigned_at || rawInc?.assigned_at || rawInc?.assignedAt || new Date().toISOString(),
+          assignmentStatus: 'Assigned',
         };
 
         // Flag as user's own report
@@ -1548,6 +1601,9 @@ export const CitizenReportFlow: React.FC<{
 
         if (addIncident) {
           addIncident(createdIncident);
+        }
+        if (refreshIncidents) {
+          refreshIncidents().catch(() => {});
         }
 
 
@@ -2018,30 +2074,6 @@ export const CitizenReportFlow: React.FC<{
 
             </button>
 
-
-            <button
-              type="button"
-              disabled
-              title="Voice description is not available yet"
-              onClick={() => {
-
-                showToast(
-                  'Coming soon',
-                  'Voice description is not available yet.',
-                  'info'
-                );
-
-              }}
-            >
-
-              <Mic
-                className="h-4 w-4"
-                aria-hidden="true"
-              />
-
-              Describe by voice
-
-            </button>
 
           </div>
 

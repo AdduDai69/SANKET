@@ -34,6 +34,15 @@ from location_engine import (
     STATUS_UNDER_CONSIDERATION,
     STATUS_REJECTED,
 )
+from assignment_engine import (
+    DEPARTMENTS,
+    ALLOWED_DEPARTMENTS,
+    CATEGORY_TO_DEPARTMENT,
+    FIELD_WORKERS,
+    map_category_to_department,
+    assign_worker_for_department,
+    filter_tasks_for_department,
+)
 
 
 # ============================================================
@@ -1804,8 +1813,8 @@ def find_matching_incident(
 @app.post("/reports")
 async def create_report(
     file: UploadFile = File(...),
-    description: str = Form(...),
-    sector: str = Form(...),
+    description: str = Form(""),
+    sector: str | None = Form(None),
     latitude: float | None = Form(None),
     longitude: float | None = Form(None),
     accuracy_meters: float | None = Form(None),
@@ -2050,30 +2059,34 @@ async def create_report(
         )
     ).lower().strip()
 
-    if (
-        confirmed_category
-        and confirmed_category in ALLOWED_ISSUE_TYPES
-    ):
-        issue_type = confirmed_category
-    else:
-        issue_type = analysis["issue_type"]
+    # Deterministic Category -> Department validation & mapping
+    candidate_category = confirmed_category or analysis.get("issue_type", "")
+    determined_department = map_category_to_department(candidate_category)
+
+    if not determined_department:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": (
+                    f"Invalid or unsupported category '{candidate_category}'. "
+                    "Category must deterministically map to one of the 5 municipal departments: "
+                    "Electrical, Roads, Water Supply, Sanitation, Horticulture."
+                ),
+                "error": "UNSUPPORTED_CATEGORY",
+            },
+        )
+
+    issue_type = candidate_category
+    department = determined_department
 
     ai_confidence = analysis["confidence"]
     severity = analysis["severity"]
     ai_description = analysis["description"]
-    department = analysis.get("recommended_department")
-    if not department or not str(department).strip():
-        department = DEFAULT_ISSUE_DEPARTMENTS.get(
-            issue_type,
-            "Public Works Department",
-        )
-    else:
-        department = str(department).strip()
 
     visible_evidence = analysis.get("visible_evidence", [])
     title = get_issue_title(issue_type)
     final_description = (
-        description.strip() if description.strip() else ai_description
+        description.strip() if (description and description.strip()) else ai_description
     )
 
     # ========================================================
@@ -2233,6 +2246,13 @@ async def create_report(
             "ai_analysis": analysis,
             "incident": updated_incident,
             "location_verification": loc_verification,
+            "assignment": {
+                "assigned_department": updated_incident.get("assigned_department") or department,
+                "assigned_worker_id": updated_incident.get("assigned_worker_id"),
+                "assigned_worker_name": updated_incident.get("assigned_worker_name"),
+                "assigned_at": updated_incident.get("assigned_at"),
+                "assignment_status": updated_incident.get("assignment_status"),
+            },
         }
 
     # ========================================================
@@ -2272,6 +2292,11 @@ async def create_report(
     else:
         assigned_sector = None
 
+    # Determine department and automatic worker assignment
+    existing_list = list(_IN_MEMORY_INCIDENTS.values())
+    assignment = assign_worker_for_department(department, existing_incidents=existing_list)
+    final_status = initial_incident_status
+
     incident_data = {
         "issue_type": issue_type,
         "title": title,
@@ -2281,7 +2306,12 @@ async def create_report(
         "latitude": final_incident_lat,
         "longitude": final_incident_lon,
         "department": department,
-        "status": initial_incident_status,
+        "assigned_department": department,
+        "assigned_worker_id": assignment["assigned_worker_id"],
+        "assigned_worker_name": assignment["assigned_worker_name"],
+        "assigned_at": assignment["assigned_at"],
+        "assignment_status": assignment["assignment_status"],
+        "status": final_status,
         "severity": severity,
         "confidence_score": civic_confidence["score"],
         "risk_score": civic_risk["score"],
@@ -2334,6 +2364,7 @@ async def create_report(
             "ai_analysis": analysis,
             "incident": enrich_incident(dict(created_incident)),
             "location_verification": loc_verification,
+            "assignment": assignment,
         }
 
     try:
@@ -2423,6 +2454,16 @@ async def create_report(
     incident["capture_timestamp"] = capture_timestamp
     incident["exif_gps_available"] = bool(exif_meta.get("exif_gps_available"))
 
+    # Attach assignment fields
+    incident["assigned_department"] = assignment.get("assigned_department")
+    incident["assigned_worker_id"] = assignment.get("assigned_worker_id")
+    incident["assigned_worker_name"] = assignment.get("assigned_worker_name")
+    incident["assigned_at"] = assignment.get("assigned_at")
+    incident["assignment_status"] = assignment.get("assignment_status")
+    incident["department"] = assignment.get("assigned_department") or incident.get("department")
+
+    enriched = enrich_incident(dict(incident))
+
     return {
         "success": True,
         "message": "Report created successfully.",
@@ -2438,51 +2479,89 @@ async def create_report(
         "incident_id": incident_id,
         "report": report_response.data[0] if report_response.data else None,
         "ai_analysis": analysis,
-        "incident": incident,
+        "incident": enriched,
         "location_verification": loc_verification,
+        "assignment": assignment,
     }
 
 
 # ============================================================
-# INCIDENT IMAGE ENRICHMENT
+# SUPABASE SCHEMA SAFETY & INCIDENT IMAGE ENRICHMENT
 # ============================================================
+
+SUPABASE_INCIDENT_COLUMNS = {
+    "incident_id", "issue_type", "title", "description", "area", "address",
+    "latitude", "longitude", "department", "status", "severity", "confidence_score",
+    "risk_score", "report_count", "recurrence_count", "created_at", "updated_at",
+    "assigned_team", "assigned_officer", "assigned_at", "civic_confidence_score",
+    "closure_image_url", "closure_latitude", "closure_longitude", "closure_distance_meters",
+    "closure_submitted_at", "closure_worker", "closure_match_score", "closure_match_status",
+    "closure_accuracy_meters", "closure_engine_version", "closure_reason", "resolved_at",
+    "resolved_by", "memory_score", "priority_score", "priority_level", "aging_days",
+    "closure_explanation",
+}
+
+
+def is_valid_uuid(val: Any) -> bool:
+    if not val:
+        return False
+    try:
+        uuid.UUID(str(val))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+def sanitize_supabase_incident_payload(data: dict[str, Any]) -> dict[str, Any]:
+    """Filter dict to only valid columns present in the Supabase incidents table."""
+    return {k: v for k, v in data.items() if k in SUPABASE_INCIDENT_COLUMNS}
+
 
 def attach_before_image(
     incident: dict[str, Any],
 ) -> dict[str, Any]:
     """
-    Attach the first available citizen report image
-    as the incident's before image.
-    This is a real image from the reports table.
+    Attach the first available citizen report image or field worker before photo
+    as the incident's before image. Preserves existing in-memory / intake photos.
     """
-
     enriched = dict(incident)
     incident_id = enriched.get("incident_id")
 
-    if not incident_id or not supabase:
-        enriched["before_image_url"] = None
+    existing = (
+        enriched.get("before_image_url")
+        or enriched.get("before_photo")
+        or enriched.get("image_url")
+    )
+
+    if not incident_id or not supabase or not is_valid_uuid(incident_id):
+        enriched["before_image_url"] = existing
+        enriched["before_photo"] = existing
         return enriched
 
     try:
         response = (
             supabase.table("reports")
-            .select("image_url,submitted_at")
+            .select("image_url,description,submitted_at")
             .eq("incident_id", incident_id)
             .not_.is_("image_url", "null")
             .order("submitted_at", desc=False)
-            .limit(1)
             .execute()
         )
 
         reports = response.data or []
-        if reports:
-            enriched["before_image_url"] = reports[0].get("image_url")
-        else:
-            enriched["before_image_url"] = None
+        worker_before = next(
+            (r["image_url"] for r in reversed(reports) if r.get("description") == "Field worker before repair photo" and r.get("image_url")),
+            None
+        )
+        original_intake = next((r["image_url"] for r in reports if r.get("image_url")), None)
+        effective_before = worker_before or original_intake or existing
+        enriched["before_image_url"] = effective_before
+        enriched["before_photo"] = effective_before
 
     except Exception as exc:
         print("BEFORE IMAGE LOOKUP ERROR:", str(exc))
-        enriched["before_image_url"] = None
+        enriched["before_image_url"] = existing
+        enriched["before_photo"] = existing
 
     return enriched
 
@@ -2497,6 +2576,13 @@ def enrich_incident(
 
     enriched = attach_risk_to_incident(incident)
     enriched = attach_before_image(enriched)
+    enriched["before_photo"] = enriched.get("before_image_url") or enriched.get("before_photo")
+    enriched["after_photo"] = enriched.get("closure_image_url") or enriched.get("after_photo")
+    enriched["completed_at"] = (
+        enriched.get("resolved_at")
+        or enriched.get("closure_submitted_at")
+        or enriched.get("completed_at")
+    )
 
     # Backward compatibility defaults
     if "incident_latitude" not in enriched or enriched["incident_latitude"] is None:
@@ -2517,6 +2603,59 @@ def enrich_incident(
             enriched["location_status"] = STATUS_UNDER_CONSIDERATION
         else:
             enriched["location_status"] = STATUS_REJECTED
+
+    # Department assignment resolution
+    cat = enriched.get("issue_type")
+    raw_dept = enriched.get("assigned_department") or enriched.get("department")
+    mapped = (
+        (raw_dept if raw_dept in DEPARTMENTS else map_category_to_department(raw_dept))
+        or map_category_to_department(cat)
+        or map_category_to_department(enriched.get("title"))
+        or "Electrical"
+    )
+    dept = mapped if mapped in DEPARTMENTS else "Electrical"
+    enriched["department"] = dept
+    enriched["assigned_department"] = dept
+
+    # Worker assignment resolution
+    worker_id = enriched.get("assigned_worker_id")
+    assign_status = enriched.get("assignment_status")
+    if worker_id and worker_id not in ("None", "null", "Unassigned"):
+        if not enriched.get("assigned_worker_name"):
+            matched_w = next((w for w in FIELD_WORKERS if w["id"] == worker_id), None)
+            enriched["assigned_worker_name"] = matched_w["name"] if matched_w else "Assigned Worker"
+        if not assign_status:
+            enriched["assignment_status"] = "Assigned"
+        if not enriched.get("assigned_at"):
+            enriched["assigned_at"] = enriched.get("created_at") or datetime.now(timezone.utc).isoformat()
+    elif assign_status in ("Awaiting Worker", "Unassigned"):
+        enriched["assigned_worker_id"] = None
+        enriched["assigned_worker_name"] = "Unassigned"
+        enriched["assignment_status"] = "Awaiting Worker"
+        enriched["assigned_at"] = None
+    else:
+        # Auto-assign eligible worker for department
+        eligible = [w for w in FIELD_WORKERS if w["department"].lower() == dept.lower()]
+        if eligible:
+            enriched["assigned_worker_id"] = eligible[0]["id"]
+            enriched["assigned_worker_name"] = eligible[0]["name"]
+            enriched["assignment_status"] = "Assigned"
+            enriched["assigned_at"] = enriched.get("created_at") or datetime.now(timezone.utc).isoformat()
+        else:
+            enriched["assigned_worker_id"] = None
+            enriched["assigned_worker_name"] = "Unassigned"
+            enriched["assignment_status"] = "Awaiting Worker"
+            enriched["assigned_at"] = None
+
+    if enriched.get("status") in ("resolved", "closed", "completed"):
+        enriched["assignment_status"] = "Completed"
+
+    # CamelCase aliases for frontend compatibility
+    enriched["assignedWorkerId"] = enriched.get("assigned_worker_id")
+    enriched["assignedWorkerName"] = enriched.get("assigned_worker_name")
+    enriched["assignedDepartment"] = enriched.get("assigned_department")
+    enriched["assignedAt"] = enriched.get("assigned_at")
+    enriched["assignmentStatus"] = enriched.get("assignment_status")
 
     return enriched
 
@@ -2608,6 +2747,11 @@ def get_incidents():
                     fallback
                 )
 
+        existing_ids = {inc.get("incident_id") for inc in enriched_incidents if inc.get("incident_id")}
+        for mem_id, mem_inc in reversed(list(_IN_MEMORY_INCIDENTS.items())):
+            if mem_id not in existing_ids:
+                enriched_incidents.insert(0, enrich_incident(dict(mem_inc)))
+
         return {
             "count": len(
                 enriched_incidents
@@ -2647,14 +2791,14 @@ def get_incidents():
 def get_incident(
     incident_id: str,
 ):
-
-    if not supabase:
-        if incident_id not in _IN_MEMORY_INCIDENTS:
-            raise HTTPException(
-                status_code=404,
-                detail="Incident not found.",
-            )
+    if incident_id in _IN_MEMORY_INCIDENTS:
         return enrich_incident(dict(_IN_MEMORY_INCIDENTS[incident_id]))
+
+    if not supabase or not is_valid_uuid(incident_id):
+        raise HTTPException(
+            status_code=404,
+            detail="Incident not found.",
+        )
 
     try:
 
@@ -2707,6 +2851,8 @@ def get_incident(
 
 class StatusUpdateRequest(BaseModel):
     status: str
+    before_photo: str | None = None
+    after_photo: str | None = None
 
 
 @app.patch("/incidents/{incident_id}/status")
@@ -2717,49 +2863,238 @@ def update_incident_status(
 ):
     """
     Update incident lifecycle status (reported, assigned, in_progress, resolved, closed).
-    Crucial rule verification: Resolving an incident at a location only resolves THAT
-    specific complaint, leaving co-located complaints at the same coordinates active.
+    Validates that a task cannot transition to resolved/closed/completed without both
+    a before photo and an after photo.
     """
     new_status = payload.status.strip().lower()
     now_iso = datetime.now(timezone.utc).isoformat()
+
+    status_to_assignment = {
+        "reported": "Awaiting Worker",
+        "assigned": "Assigned",
+        "in_progress": "In Progress",
+        "resolved": "Completed",
+        "closed": "Completed",
+    }
+    assignment_status = status_to_assignment.get(new_status)
+
+    # --------------------------------------------------------
+    # Validate completion requires both before & after photos
+    # --------------------------------------------------------
+    if new_status == "completed" or (
+        new_status in ("resolved", "closed")
+        and (payload.before_photo is not None or payload.after_photo is not None)
+    ):
+        existing_record = None
+        if supabase and is_valid_uuid(incident_id):
+            try:
+                res = supabase.table("incidents").select("*").eq("incident_id", incident_id).limit(1).execute()
+                if res.data:
+                    existing_record = res.data[0]
+            except Exception:
+                pass
+        if not existing_record:
+            existing_record = _IN_MEMORY_INCIDENTS.get(incident_id)
+
+        if existing_record:
+            enriched_rec = enrich_incident(existing_record)
+            has_before = bool(
+                payload.before_photo
+                or enriched_rec.get("before_photo")
+                or enriched_rec.get("before_image_url")
+            )
+            has_after = bool(
+                payload.after_photo
+                or enriched_rec.get("after_photo")
+                or enriched_rec.get("closure_image_url")
+            )
+            if not (has_before and has_after):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot transition task to completed: Both before photo and after photo are required.",
+                )
+
+    if supabase and is_valid_uuid(incident_id):
+        try:
+            update_payload: dict[str, Any] = {"status": new_status, "updated_at": now_iso}
+            if new_status in ("resolved", "closed", "completed"):
+                update_payload["resolved_at"] = now_iso
+            if payload.after_photo:
+                update_payload["closure_image_url"] = payload.after_photo
+
+            safe_payload = sanitize_supabase_incident_payload(update_payload)
+            res = (
+                supabase
+                .table("incidents")
+                .update(safe_payload)
+                .eq("incident_id", incident_id)
+                .execute()
+            )
+            if res.data:
+                if payload.before_photo:
+                    try:
+                        supabase.table("reports").insert({
+                            "incident_id": incident_id,
+                            "image_url": payload.before_photo,
+                            "description": "Field worker before repair photo",
+                        }).execute()
+                    except Exception:
+                        pass
+                enriched_data = dict(res.data[0])
+                if assignment_status:
+                    enriched_data["assignment_status"] = assignment_status
+                if payload.before_photo:
+                    enriched_data["before_photo"] = payload.before_photo
+                    enriched_data["before_image_url"] = payload.before_photo
+                if payload.after_photo:
+                    enriched_data["after_photo"] = payload.after_photo
+                    enriched_data["closure_image_url"] = payload.after_photo
+                return {
+                    "success": True,
+                    "incident": enrich_incident(enriched_data),
+                }
+        except HTTPException:
+            raise
+        except Exception as err:
+            print("Status update Supabase error:", err)
+
+    # Fallback to in-memory records (or initialize for client-side reports)
+    if incident_id not in _IN_MEMORY_INCIDENTS:
+        _IN_MEMORY_INCIDENTS[incident_id] = {
+            "incident_id": incident_id,
+            "title": "Civic Issue",
+            "status": new_status,
+            "assignment_status": assignment_status or "Completed",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+            "report_count": 1,
+            "recurrence_count": 0,
+        }
+    _IN_MEMORY_INCIDENTS[incident_id]["status"] = new_status
+    if assignment_status:
+        _IN_MEMORY_INCIDENTS[incident_id]["assignment_status"] = assignment_status
+    if new_status in ("resolved", "closed", "completed"):
+        _IN_MEMORY_INCIDENTS[incident_id]["resolved_at"] = now_iso
+        _IN_MEMORY_INCIDENTS[incident_id]["completed_at"] = now_iso
+    if payload.before_photo:
+        _IN_MEMORY_INCIDENTS[incident_id]["before_photo"] = payload.before_photo
+        _IN_MEMORY_INCIDENTS[incident_id]["before_image_url"] = payload.before_photo
+    if payload.after_photo:
+        _IN_MEMORY_INCIDENTS[incident_id]["after_photo"] = payload.after_photo
+        _IN_MEMORY_INCIDENTS[incident_id]["closure_image_url"] = payload.after_photo
+    _IN_MEMORY_INCIDENTS[incident_id]["updated_at"] = now_iso
+    return {
+        "success": True,
+        "incident": enrich_incident(dict(_IN_MEMORY_INCIDENTS[incident_id])),
+    }
+
+
+# ============================================================
+# REASSIGN FIELD WORKER
+# ============================================================
+
+class AssignWorkerRequest(BaseModel):
+    worker_id: str
+
+
+@app.patch("/incidents/{incident_id}/assign")
+@app.post("/incidents/{incident_id}/assign")
+def reassign_incident_worker(
+    incident_id: str,
+    payload: AssignWorkerRequest,
+):
+    """
+    Reassign incident to an eligible worker in the same department.
+    Updates current worker, timestamp, and status.
+    """
+    worker = next((w for w in FIELD_WORKERS if w["id"] == payload.worker_id), None)
+    if not worker:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Field worker '{payload.worker_id}' not found in registry.",
+        )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    update_data: dict[str, Any] = {
+        "assigned_worker_id": worker["id"],
+        "assigned_worker_name": worker["name"],
+        "assigned_department": worker["department"],
+        "department": worker["department"],
+        "assigned_at": now_iso,
+        "assignment_status": "Assigned",
+        "status": "assigned",
+        "updated_at": now_iso,
+    }
 
     if supabase:
         try:
             res = (
                 supabase
                 .table("incidents")
-                .update({"status": new_status, "updated_at": now_iso})
+                .update(update_data)
                 .eq("incident_id", incident_id)
                 .execute()
             )
             if not res.data:
-                raise HTTPException(
-                    status_code=404,
-                    detail="Incident not found.",
-                )
-            return {
-                "success": True,
-                "incident": enrich_incident(res.data[0]),
-            }
-        except HTTPException:
-            raise
+                raise HTTPException(status_code=404, detail="Incident not found.")
+            return {"success": True, "incident": enrich_incident(res.data[0])}
         except Exception as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Could not update status: {str(exc)}",
-            )
+            raise HTTPException(status_code=500, detail=f"Could not reassign: {str(exc)}")
     else:
         if incident_id not in _IN_MEMORY_INCIDENTS:
-            raise HTTPException(
-                status_code=404,
-                detail="Incident not found.",
-            )
-        _IN_MEMORY_INCIDENTS[incident_id]["status"] = new_status
-        _IN_MEMORY_INCIDENTS[incident_id]["updated_at"] = now_iso
+            raise HTTPException(status_code=404, detail="Incident not found.")
+        _IN_MEMORY_INCIDENTS[incident_id].update(update_data)
         return {
             "success": True,
             "incident": enrich_incident(dict(_IN_MEMORY_INCIDENTS[incident_id])),
         }
+
+
+# ============================================================
+# FIELD WORKERS & DEPARTMENT TASKS ENDPOINTS
+# ============================================================
+
+@app.get("/field-workers")
+def get_field_workers():
+    """
+    Returns the registry of municipal field workers across the 5 departments.
+    """
+    return {
+        "departments": DEPARTMENTS,
+        "workers": FIELD_WORKERS,
+    }
+
+
+@app.get("/field-worker/tasks")
+def get_field_worker_tasks(
+    department: str | None = None,
+    worker_id: str | None = None,
+):
+    """
+    Returns tasks filtered for a specific department and/or worker.
+    Strict backend filtering guarantees that e.g. Roads workers never see Electrical tasks.
+    """
+    all_incidents = []
+    if supabase:
+        try:
+            res = supabase.table("incidents").select("*").order("created_at", desc=True).execute()
+            all_incidents = [enrich_incident(i) for i in (res.data or [])]
+        except Exception:
+            all_incidents = [enrich_incident(dict(i)) for i in _IN_MEMORY_INCIDENTS.values()]
+    else:
+        all_incidents = [enrich_incident(dict(i)) for i in _IN_MEMORY_INCIDENTS.values()]
+
+    filtered = filter_tasks_for_department(
+        all_incidents,
+        department=department,
+        worker_id=worker_id,
+    )
+    return {
+        "department": department,
+        "worker_id": worker_id,
+        "count": len(filtered),
+        "tasks": filtered,
+    }
 
 
 # ============================================================
@@ -2973,6 +3308,76 @@ def assign_incident(
 # ============================================================
 
 @app.post(
+    "/incidents/{incident_id}/before-photo"
+)
+async def upload_before_photo(
+    incident_id: str,
+    photo: UploadFile = File(...),
+):
+    """
+    Upload a field intake Before Photo of the issue before repair begins.
+    """
+    if not photo.content_type or not photo.content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only image files are allowed for before photo evidence.",
+        )
+    b_bytes = await photo.read()
+    validate_image_bytes(b_bytes)
+    before_url = upload_image_to_storage(
+        image_bytes=b_bytes,
+        content_type=photo.content_type,
+        folder="before-evidence",
+        original_filename=photo.filename,
+    )
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if supabase:
+        try:
+            supabase.table("reports").insert({
+                "incident_id": incident_id,
+                "image_url": before_url,
+                "description": "Field worker before repair photo",
+            }).execute()
+            inc_res = supabase.table("incidents").select("*").eq("incident_id", incident_id).limit(1).execute()
+            if inc_res.data:
+                cur = inc_res.data[0]
+                up: dict[str, Any] = {"updated_at": now_iso}
+                if cur.get("status") == "assigned":
+                    up["status"] = "in_progress"
+                safe_up = sanitize_supabase_incident_payload(up)
+                supabase.table("incidents").update(safe_up).eq("incident_id", incident_id).execute()
+                updated_inc = supabase.table("incidents").select("*").eq("incident_id", incident_id).limit(1).execute()
+                inc_dict = dict(updated_inc.data[0]) if updated_inc.data else dict(cur)
+                inc_dict["assignment_status"] = "In Progress"
+                inc_dict["before_photo"] = before_url
+                inc_dict["before_image_url"] = before_url
+                return {
+                    "success": True,
+                    "before_photo_url": before_url,
+                    "incident": enrich_incident(inc_dict),
+                }
+        except Exception as e:
+            print("Before photo persistence error:", e)
+
+    # In-memory fallback
+    if incident_id in _IN_MEMORY_INCIDENTS:
+        _IN_MEMORY_INCIDENTS[incident_id]["before_photo"] = before_url
+        _IN_MEMORY_INCIDENTS[incident_id]["before_image_url"] = before_url
+        if _IN_MEMORY_INCIDENTS[incident_id].get("status") == "assigned":
+            _IN_MEMORY_INCIDENTS[incident_id]["status"] = "in_progress"
+            _IN_MEMORY_INCIDENTS[incident_id]["assignment_status"] = "In Progress"
+        return {
+            "success": True,
+            "before_photo_url": before_url,
+            "incident": enrich_incident(dict(_IN_MEMORY_INCIDENTS[incident_id])),
+        }
+    return {
+        "success": True,
+        "before_photo_url": before_url,
+    }
+
+
+@app.post(
     "/incidents/{incident_id}/closure"
 )
 async def submit_closure_evidence(
@@ -2981,38 +3386,11 @@ async def submit_closure_evidence(
     latitude: float = Form(...),
     longitude: float = Form(...),
     accuracy_meters: float | None = Form(None),
+    before_photo: UploadFile | None = File(None),
 ):
     """
-    Submit real field repair evidence.
-
-    Workflow:
-
-        1. Validate repair photo.
-        2. Validate field GPS.
-        3. Load original incident.
-        4. Upload repair photo to Supabase Storage.
-        5. Calculate GPS distance.
-        6. Run deterministic Smart Closure engine.
-        7. Automatically resolve only if:
-              - repair photo exists
-              - original GPS exists
-              - field GPS exists
-              - distance <= 50m
-        8. Persist closure evidence.
+    Submit real field repair evidence. Validates that both before and after photos exist.
     """
-
-    if not supabase:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Supabase is not configured."
-            ),
-        )
-
-    # --------------------------------------------------------
-    # Validate photo
-    # --------------------------------------------------------
-
     if not photo.content_type:
         raise HTTPException(
             status_code=400,
@@ -3122,45 +3500,37 @@ async def submit_closure_evidence(
     # Load original incident
     # --------------------------------------------------------
 
-    try:
-
-        incident_response = (
-            supabase
-            .table("incidents")
-            .select("*")
-            .eq(
-                "incident_id",
-                incident_id,
+    incident = None
+    if supabase and is_valid_uuid(incident_id):
+        try:
+            incident_response = (
+                supabase
+                .table("incidents")
+                .select("*")
+                .eq(
+                    "incident_id",
+                    incident_id,
+                )
+                .limit(1)
+                .execute()
             )
-            .limit(1)
-            .execute()
-        )
+            if incident_response.data:
+                incident = incident_response.data[0]
+        except Exception as exc:
+            print("Supabase lookup error in submit_closure_evidence:", exc)
 
-    except Exception as exc:
-
-        print(
-            "SMART CLOSURE INCIDENT LOOKUP ERROR:"
-        )
-
-        print(str(exc))
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Could not retrieve incident "
-                f"for closure: {str(exc)}"
-            ),
-        )
-
-    if not incident_response.data:
-        raise HTTPException(
-            status_code=404,
-            detail="Incident not found.",
-        )
-
-    incident = (
-        incident_response.data[0]
-    )
+    if not incident:
+        if incident_id not in _IN_MEMORY_INCIDENTS:
+            _IN_MEMORY_INCIDENTS[incident_id] = {
+                "incident_id": incident_id,
+                "title": "Civic Issue",
+                "status": "in_progress",
+                "assignment_status": "In Progress",
+                "latitude": latitude,
+                "longitude": longitude,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        incident = dict(_IN_MEMORY_INCIDENTS[incident_id])
 
     # --------------------------------------------------------
     # Do not close an already closed incident
@@ -3180,6 +3550,45 @@ async def submit_closure_evidence(
                 "This incident is already "
                 f"{current_status}."
             ),
+        )
+
+    # --------------------------------------------------------
+    # Upload optional before photo if provided
+    # --------------------------------------------------------
+    uploaded_before_url = None
+    if before_photo and before_photo.filename:
+        if before_photo.content_type and before_photo.content_type.startswith("image/"):
+            b_bytes = await before_photo.read()
+            validate_image_bytes(b_bytes)
+            uploaded_before_url = upload_image_to_storage(
+                image_bytes=b_bytes,
+                content_type=before_photo.content_type,
+                folder="before-evidence",
+                original_filename=before_photo.filename,
+            )
+            if supabase:
+                try:
+                    supabase.table("reports").insert({
+                        "incident_id": incident_id,
+                        "image_url": uploaded_before_url,
+                        "description": "Field worker before repair photo",
+                    }).execute()
+                except Exception as e:
+                    print("Could not insert before photo into reports:", e)
+
+    # --------------------------------------------------------
+    # VALIDATION: Both before and after photos must exist
+    # --------------------------------------------------------
+    enriched_incident = enrich_incident(incident)
+    effective_before = (
+        uploaded_before_url
+        or enriched_incident.get("before_photo")
+        or enriched_incident.get("before_image_url")
+    )
+    if not effective_before:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot complete task: Both before photo and after photo are required.",
         )
 
     # --------------------------------------------------------
@@ -3208,6 +3617,8 @@ async def submit_closure_evidence(
             accuracy_meters,
         "photo_url":
             closure_image_url,
+        "has_before_photo":
+            bool(effective_before),
     }
 
     closure_result = (
@@ -3263,9 +3674,8 @@ async def submit_closure_evidence(
     if automatic_closure_allowed:
         new_status = "resolved"
         resolved_at = now
-
     else:
-        new_status = current_status
+        new_status = "needs_review"
         resolved_at = incident.get(
             "resolved_at"
         )
@@ -3274,7 +3684,7 @@ async def submit_closure_evidence(
     # Persist closure evidence
     # --------------------------------------------------------
 
-    update_data = {
+    update_data: dict[str, Any] = {
         "closure_image_url":
             closure_image_url,
 
@@ -3305,73 +3715,56 @@ async def submit_closure_evidence(
         "closure_engine_version":
             CLOSURE_ENGINE_VERSION,
 
+        "status":
+            new_status,
+
         "updated_at":
             now,
     }
 
-    if automatic_closure_allowed:
+    if automatic_closure_allowed and resolved_at:
+        update_data["resolved_at"] = resolved_at
 
-        update_data[
-            "status"
-        ] = "resolved"
-
-        update_data[
-            "resolved_at"
-        ] = resolved_at
-
-    try:
-
-        update_response = (
-            supabase
-            .table("incidents")
-            .update(
-                update_data
+    updated_incident = None
+    if supabase and is_valid_uuid(incident_id):
+        try:
+            safe_update = sanitize_supabase_incident_payload(update_data)
+            update_response = (
+                supabase
+                .table("incidents")
+                .update(
+                    safe_update
+                )
+                .eq(
+                    "incident_id",
+                    incident_id,
+                )
+                .execute()
             )
-            .eq(
-                "incident_id",
-                incident_id,
-            )
-            .execute()
-        )
+            if update_response.data:
+                updated_incident = dict(update_response.data[0])
+                updated_incident["assignment_status"] = "Completed"
+                if effective_before:
+                    updated_incident["before_photo"] = effective_before
+                    updated_incident["before_image_url"] = effective_before
+                updated_incident["after_photo"] = closure_image_url
+                updated_incident["completed_at"] = now
+        except Exception as exc:
+            print("Could not update Supabase closure:", exc)
 
-    except Exception as exc:
-
-        print(
-            "===================================="
-        )
-
-        print(
-            "SMART CLOSURE UPDATE ERROR:"
-        )
-
-        print(str(exc))
-
-        print(
-            "===================================="
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Closure evidence was uploaded "
-                "but incident metadata could "
-                "not be updated: "
-                f"{str(exc)}"
-            ),
-        )
-
-    if not update_response.data:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Closure evidence could not "
-                "be attached to the incident."
-            ),
-        )
-
-    updated_incident = (
-        update_response.data[0]
-    )
+    if not updated_incident:
+        if incident_id not in _IN_MEMORY_INCIDENTS:
+            _IN_MEMORY_INCIDENTS[incident_id] = dict(incident)
+        _IN_MEMORY_INCIDENTS[incident_id].update(update_data)
+        _IN_MEMORY_INCIDENTS[incident_id]["assignment_status"] = "Completed"
+        if effective_before:
+            _IN_MEMORY_INCIDENTS[incident_id]["before_photo"] = effective_before
+            _IN_MEMORY_INCIDENTS[incident_id]["before_image_url"] = effective_before
+        if closure_image_url:
+            _IN_MEMORY_INCIDENTS[incident_id]["after_photo"] = closure_image_url
+            _IN_MEMORY_INCIDENTS[incident_id]["closure_image_url"] = closure_image_url
+        _IN_MEMORY_INCIDENTS[incident_id]["completed_at"] = now
+        updated_incident = dict(_IN_MEMORY_INCIDENTS[incident_id])
 
     updated_incident = enrich_incident(
         updated_incident

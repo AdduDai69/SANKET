@@ -14,6 +14,8 @@ import {
   ChevronRight,
   ClipboardList,
   Clock,
+  Calendar,
+  Filter,
   HardHat,
   Landmark,
   LifeBuoy,
@@ -66,39 +68,79 @@ export const SectionHeading: React.FC<{
 
 /* ---------------- Job card ---------------- */
 
+const formatAssignedTime = (iso?: string | null) => {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '—';
+    return d.toLocaleString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+  } catch {
+    return '—';
+  }
+};
+
 export const JobCard: React.FC<{ incident: Incident; onOpen: () => void }> = ({
   incident,
   onOpen,
 }) => {
   const priority = jobPriority(incident);
+  const ticketLabel = incident.ticketNumber
+    ? (incident.ticketNumber.startsWith('CHD-') || incident.ticketNumber.startsWith('TKT-')
+      ? incident.ticketNumber
+      : `CHD-${incident.ticketNumber}`)
+    : `#${incident.id.slice(0, 8)}`;
+  const assignedDate = formatAssignedTime(incident.assignedAt || incident.reportedAt);
+
   return (
     <button
       onClick={onOpen}
-      className={`fw-job-card fw-priority-${priority.tone}`}
-      aria-label={`${priority.label}: ${categoryTitle(incident)} in ${incident.sector}. ${incident.waitingDays} days waiting. View job.`}
+      className={`fw-job-card fw-priority-${priority.tone} text-left w-full`}
+      aria-label={`${priority.label}: ${categoryTitle(incident)} in ${incident.sector}.`}
     >
-      <span className={`fw-priority-flag tone-${priority.tone}`}>{priority.label}</span>
-      <span className="fw-job-title">{categoryTitle(incident)}</span>
-      <div className="fw-job-meta">
-        <span>
-          <MapPin className="h-3.5 w-3.5" aria-hidden="true" />
-          {incident.sector}
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-[11px] font-bold text-[#565C68] bg-[#F4F3EF] px-2 py-0.5 rounded border border-[#E5E3DC]">
+          Complaint {ticketLabel}
         </span>
-        <span>
-          <Clock className="h-3.5 w-3.5" aria-hidden="true" />
-          {incident.waitingDays} days waiting
+        <span className={`fw-priority-flag tone-${priority.tone}`}>{priority.label}</span>
+      </div>
+
+      <div className="mt-2">
+        <span className="text-[11px] text-[#7E8592] uppercase font-bold tracking-wider block">
+          Category: <b className="text-[#191B1F] normal-case">{categoryTitle(incident)}</b>
+        </span>
+      </div>
+
+      <div className="fw-job-meta mt-2 grid grid-cols-1 sm:grid-cols-2 gap-1 text-xs">
+        <span className="flex items-center gap-1.5">
+          <MapPin className="h-3.5 w-3.5 text-[#2C5E48] shrink-0" aria-hidden="true" />
+          <span>Location: <b>{incident.sector}</b></span>
+        </span>
+        <span className="flex items-center gap-1.5">
+          <Clock className="h-3.5 w-3.5 text-[#7E8592] shrink-0" aria-hidden="true" />
+          <span>Assigned On: <b>{assignedDate}</b></span>
         </span>
         {incident.isRecurring && (
-          <span>
-            <Repeat className="h-3.5 w-3.5" aria-hidden="true" />
-            Recurring location
+          <span className="flex items-center gap-1.5 text-[#C88427]">
+            <Repeat className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span>Recurring location</span>
           </span>
         )}
       </div>
-      <div className="fw-job-foot">
-        <JobStatusPill status={incident.status} />
+
+      <div className="fw-job-foot mt-3 pt-2 border-t border-[#F4F3EF] flex items-center justify-between">
+        <div className="flex items-center gap-1.5 text-xs font-semibold text-[#1E6B42]">
+          <CheckCircle2 className="h-3.5 w-3.5" />
+          <span>Status: <b>{incident.assignmentStatus || 'Assigned'}</b></span>
+        </div>
         <span className="fw-text-action">
-          View job <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+          View task <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
         </span>
       </div>
     </button>
@@ -111,36 +153,48 @@ export const JobCard: React.FC<{ incident: Incident; onOpen: () => void }> = ({
 
 export const FieldHomePage: React.FC<{
   jobs: Incident[];
+  selectedDepartment?: string | null;
   onOpenJob: (id: string) => void;
   onNavigate: (route: FieldRoute) => void;
-}> = ({ jobs, onOpenJob }) => {
+  onSwitchDepartment?: () => void;
+}> = ({ jobs, selectedDepartment, onOpenJob, onSwitchDepartment }) => {
   const sorted = useMemo(() => sortJobQueue(jobs), [jobs]);
   const inProgress = jobs.filter((j) => j.status === 'in_progress').length;
-  const pending = jobs.filter((j) => j.status === 'assigned').length;
+  const pending = jobs.filter((j) => j.status === 'assigned' || j.assignmentStatus === 'Assigned').length;
 
   return (
     <div className="fw-page">
       <section className="fw-welcome">
-        <p className="fw-eyebrow">
-          TODAY'S WORK ·{' '}
-          {new Date().toLocaleDateString(undefined, {
-            weekday: 'long',
-            day: 'numeric',
-            month: 'short',
-          })}
-        </p>
-        <h1>{greetingForNow()}, Raj</h1>
+        <div className="flex items-center justify-between gap-2">
+          <p className="fw-eyebrow">
+            {selectedDepartment ? `${selectedDepartment.toUpperCase()} FIELD WORKER` : "TODAY'S WORK"} ·{' '}
+            {new Date().toLocaleDateString(undefined, {
+              weekday: 'long',
+              day: 'numeric',
+              month: 'short',
+            })}
+          </p>
+          {onSwitchDepartment && (
+            <button
+              onClick={onSwitchDepartment}
+              className="text-[11px] font-bold text-[#2C5E48] hover:underline"
+            >
+              Switch Department
+            </button>
+          )}
+        </div>
+        <h1 className="mt-1">{selectedDepartment ? `${selectedDepartment.toUpperCase()} FIELD WORKER` : `${greetingForNow()}, Raj`}</h1>
         <p>
           {jobs.length
-            ? `You have ${jobs.length} assigned incident${jobs.length === 1 ? '' : 's'}. Highest priority first.`
-            : 'No jobs assigned right now — new assignments will appear here.'}
+            ? `Assigned Tasks: ${jobs.length} incident${jobs.length === 1 ? '' : 's'} assigned to ${selectedDepartment || 'your department'}. Highest priority first.`
+            : `No jobs assigned for ${selectedDepartment || 'your department'} right now — new assignments will appear here.`}
         </p>
       </section>
 
       <div className="fw-summary-row" role="list" aria-label="Work summary">
         <div className="fw-summary-card" role="listitem">
           <b>{jobs.length}</b>
-          <span>Assigned</span>
+          <span>Assigned Tasks</span>
         </div>
         <div className="fw-summary-card is-rust" role="listitem">
           <b>{sorted.filter((j) => jobPriority(j).label === 'High Priority').length}</b>
@@ -150,37 +204,14 @@ export const FieldHomePage: React.FC<{
           <b>{inProgress}</b>
           <span>In Progress</span>
         </div>
-        <div className="fw-summary-card is-slate" role="listitem">
-          <b>{pending}</b>
-          <span>Pending Start</span>
-        </div>
-      </div>
-
-      {/* -------- Quick actions -------- */}
-      <div className="fw-quick-actions">
-        <button onClick={() => sorted[0] && onOpenJob(sorted[0].id)}>
-          <HardHat className="h-4 w-4" aria-hidden="true" />
-          Priority job
-        </button>
-        <button onClick={() => navigateTo('/field/map')}>
-          <Map className="h-4 w-4" aria-hidden="true" />
-          Open map
-        </button>
-        <button
-          onClick={() => {
-            const active = jobs.find((j) => j.status === 'in_progress');
-            if (active) onOpenJob(active.id);
-          }}
-          disabled={!jobs.some((j) => j.status === 'in_progress')}
-        >
-          <Play className="h-4 w-4" aria-hidden="true" />
-          Continue job
-        </button>
       </div>
 
       {/* -------- Queue -------- */}
       <section className="mt-6">
-        <SectionHeading eyebrow="TODAY'S ASSIGNMENTS" title="Your work queue" />
+        <SectionHeading
+          eyebrow={selectedDepartment ? `${selectedDepartment.toUpperCase()} ASSIGNMENTS` : "TODAY'S ASSIGNMENTS"}
+          title="Assigned Tasks"
+        />
         {sorted.length ? (
           <div className="mt-4 space-y-3">
             {sorted.map((incident) => (
@@ -193,7 +224,7 @@ export const FieldHomePage: React.FC<{
           </div>
         ) : (
           <p className="mt-4 text-sm text-[#565C68]">
-            All assigned work is complete. New assignments will appear here.
+            All assigned work for {selectedDepartment || 'your department'} is complete. New assignments will appear here.
           </p>
         )}
       </section>
@@ -205,19 +236,192 @@ export const FieldHomePage: React.FC<{
 
 export const FieldJobsPage: React.FC<{
   jobs: Incident[];
+  selectedDepartment?: string | null;
   onOpenJob: (id: string) => void;
-}> = ({ jobs, onOpenJob }) => {
-  const sorted = useMemo(() => sortJobQueue(jobs), [jobs]);
+  onSwitchDepartment?: () => void;
+}> = ({ jobs, selectedDepartment, onOpenJob, onSwitchDepartment }) => {
+  const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'upcoming'>('all');
+  const [priorityFilter, setPriorityFilter] = useState<'all' | 'high' | 'medium' | 'low'>('all');
+
+  const isTaskToday = (job: Incident): boolean => {
+    const dateStr = job.assignedAt || job.reportedAt;
+    if (!dateStr) return false;
+    const d = new Date(dateStr);
+    const now = new Date();
+    const isSameDay =
+      d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate();
+    return isSameDay || job.waitingDays === 0;
+  };
+
+  const isTaskUpcoming = (job: Incident): boolean => {
+    const dateStr = job.assignedAt || job.reportedAt;
+    if (!dateStr) return false;
+    const d = new Date(dateStr);
+    const now = new Date();
+    return d.getTime() > now.getTime() || job.waitingDays > 0;
+  };
+
+  const matchesPriority = (job: Incident, filter: 'all' | 'high' | 'medium' | 'low'): boolean => {
+    if (filter === 'all') return true;
+    const p = jobPriority(job);
+    const label = p.label.toLowerCase();
+    const risk = (job.riskLevel || '').toLowerCase();
+
+    if (filter === 'high') {
+      return label.includes('high') || risk === 'high' || risk === 'critical';
+    }
+    if (filter === 'medium') {
+      return label.includes('medium') || risk === 'medium';
+    }
+    if (filter === 'low') {
+      return label.includes('standard') || risk === 'low';
+    }
+    return true;
+  };
+
+  const filteredJobs = useMemo(() => {
+    return jobs.filter((job) => {
+      // Date filter
+      if (dateFilter === 'today' && !isTaskToday(job)) return false;
+      if (dateFilter === 'upcoming' && !isTaskUpcoming(job)) return false;
+
+      // Priority filter
+      if (!matchesPriority(job, priorityFilter)) return false;
+
+      return true;
+    });
+  }, [jobs, dateFilter, priorityFilter]);
+
+  const sorted = useMemo(() => sortJobQueue(filteredJobs), [filteredJobs]);
+  const isFiltered = dateFilter !== 'all' || priorityFilter !== 'all';
+
+  const clearFilters = () => {
+    setDateFilter('all');
+    setPriorityFilter('all');
+  };
+
   return (
     <div className="fw-page">
-      <SectionHeading eyebrow="WORK QUEUE" title="Assigned jobs" />
+      <div className="flex items-center justify-between">
+        <SectionHeading
+          eyebrow={selectedDepartment ? `${selectedDepartment.toUpperCase()} WORK QUEUE` : "WORK QUEUE"}
+          title="Assigned Tasks"
+        />
+        {onSwitchDepartment && (
+          <button
+            onClick={onSwitchDepartment}
+            className="text-xs font-bold text-[#2C5E48] hover:underline"
+          >
+            Switch Department
+          </button>
+        )}
+      </div>
       <p className="mt-1 text-sm text-[#565C68]">
-        {sorted.length} job{sorted.length === 1 ? '' : 's'} in your queue, ordered by priority.
+        {jobs.length} task{jobs.length === 1 ? '' : 's'} assigned to {selectedDepartment || 'your department'}.
       </p>
+
+      {/* FILTER CONTROLS */}
+      <div className="mt-4 bg-white border border-[#E5E3DC] rounded-xl p-3 sm:p-4 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          {/* Date Filter */}
+          <div className="flex flex-col gap-1.5 flex-1 min-w-[140px]">
+            <label className="text-[11px] font-bold text-[#565C68] uppercase tracking-wider flex items-center gap-1.5">
+              <Calendar className="w-3.5 h-3.5 text-[#7E8592]" />
+              Date
+            </label>
+            <div className="inline-flex rounded-lg border border-[#E5E3DC] p-0.5 bg-[#FAF9F5]">
+              {(['all', 'today', 'upcoming'] as const).map((d) => (
+                <button
+                  key={d}
+                  onClick={() => setDateFilter(d)}
+                  className={`flex-1 px-3 py-1 text-xs font-semibold rounded-md transition-colors capitalize ${
+                    dateFilter === d
+                      ? 'bg-white text-[#191B1F] shadow-xs font-bold'
+                      : 'text-[#7E8592] hover:text-[#191B1F]'
+                  }`}
+                >
+                  {d}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Priority Filter */}
+          <div className="flex flex-col gap-1.5 flex-1 min-w-[180px]">
+            <label className="text-[11px] font-bold text-[#565C68] uppercase tracking-wider flex items-center gap-1.5">
+              <Filter className="w-3.5 h-3.5 text-[#7E8592]" />
+              Priority
+            </label>
+            <div className="inline-flex rounded-lg border border-[#E5E3DC] p-0.5 bg-[#FAF9F5]">
+              {(['all', 'high', 'medium', 'low'] as const).map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setPriorityFilter(p)}
+                  className={`flex-1 px-2.5 py-1 text-xs font-semibold rounded-md transition-colors capitalize ${
+                    priorityFilter === p
+                      ? 'bg-white text-[#191B1F] shadow-xs font-bold'
+                      : 'text-[#7E8592] hover:text-[#191B1F]'
+                  }`}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Clear Filters Button */}
+          {isFiltered && (
+            <div className="sm:self-end flex items-center">
+              <button
+                onClick={clearFilters}
+                className="px-3 py-1.5 text-xs font-bold text-[#C54E38] hover:bg-[#FDF0ED] border border-[#F8D2CA] rounded-lg transition-colors flex items-center gap-1.5 w-full sm:w-auto justify-center"
+              >
+                <X className="w-3.5 h-3.5" />
+                Clear Filters
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Count indicator */}
+        <div className="mt-3 pt-2.5 border-t border-[#F4F3EF] flex flex-wrap items-center justify-between gap-1 text-xs text-[#7E8592]">
+          <span>
+            Showing <b className="text-[#191B1F]">{sorted.length}</b> of {jobs.length} task{jobs.length === 1 ? '' : 's'}
+          </span>
+          {isFiltered && (
+            <span className="text-xs font-medium text-[#2C5E48]">
+              {dateFilter !== 'all' ? `Date: ${dateFilter}` : ''}
+              {dateFilter !== 'all' && priorityFilter !== 'all' ? ' • ' : ''}
+              {priorityFilter !== 'all' ? `Priority: ${priorityFilter}` : ''}
+            </span>
+          )}
+        </div>
+      </div>
+
       <div className="mt-4 space-y-3">
-        {sorted.map((incident) => (
-          <JobCard key={incident.id} incident={incident} onOpen={() => onOpenJob(incident.id)} />
-        ))}
+        {sorted.length > 0 ? (
+          sorted.map((incident) => (
+            <JobCard key={incident.id} incident={incident} onOpen={() => onOpenJob(incident.id)} />
+          ))
+        ) : (
+          <div className="bg-white border border-[#E5E3DC] rounded-xl p-8 text-center">
+            <p className="text-sm font-bold text-[#191B1F]">No matching tasks</p>
+            <p className="text-xs text-[#7E8592] mt-1">
+              No assigned tasks match your selected date and priority filters.
+            </p>
+            {isFiltered && (
+              <button
+                onClick={clearFilters}
+                className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-[#FAF9F5] border border-[#E5E3DC] text-[#191B1F] hover:bg-[#F4F3EF]"
+              >
+                <X className="w-3.5 h-3.5" />
+                Clear Filters
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

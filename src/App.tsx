@@ -183,7 +183,8 @@ const RoutedCitizenWorkspace: React.FC<{ route: 'home' | 'map' | 'report' | 'rep
 };
 
 const RoutedFieldWorkspace: React.FC<{ route: FieldRouteName; jobId: string | null; onNavigate: (path: string) => void }> = ({ route, jobId, onNavigate }) => {
-  const { setPersona } = useCivic();
+  const { setPersona, refreshIncidents } = useCivic();
   useEffect(() => { setPersona('field_officer'); }, [setPersona]);
+  useEffect(() => { refreshIncidents?.().catch(() => {}); }, [refreshIncidents]);
   return <FieldWorkspace route={route} jobId={jobId} onNavigate={onNavigate} />;
 };

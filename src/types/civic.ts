@@ -162,6 +162,9 @@ export interface Incident {
   // Evidence
   beforeImageUrl: string;
   afterImageUrl?: string;
+  beforePhoto?: string;
+  afterPhoto?: string;
+  completedAt?: string;
 
   description: string;
 
@@ -169,6 +172,10 @@ export interface Incident {
   assignedTeam?: string;
   assignedOfficer?: string;
   assignedAt?: string;
+  assignedDepartment?: string;
+  assignedWorkerId?: string | null;
+  assignedWorkerName?: string | null;
+  assignmentStatus?: string;
 
   // Civic DNA Asset Linkage
   associatedAssetId?: string | null;

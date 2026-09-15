@@ -46,11 +46,13 @@ import {
   Sparkles,
   WifiOff,
   AlertTriangle,
+  MapPinOff,
 } from 'lucide-react';
 
 import { CivicMap } from '../common/CivicMap';
-import { useCivic } from '../../context/CivicContext';
+import { useCivic, haversineMeters } from '../../context/CivicContext';
 import { useCitizenLocation } from '../citizen/useCitizenLocation';
+import { readExifFromBlob } from '../../utils/exifReader';
 
 import {
   categoryTitle,
@@ -84,6 +86,7 @@ export const FieldJobDetail:
     incidents,
     startFieldWork,
     submitClosureEvidence,
+    uploadBeforePhoto,
     isOffline,
     showToast,
   } = useCivic();
@@ -125,20 +128,106 @@ export const FieldJobDetail:
 
 
   /* =======================================================
-     COMPLETION EVIDENCE
+     COMPLETION EVIDENCE (BEFORE & AFTER PHOTOS)
   ======================================================= */
+
+  const [beforePhotoFile, setBeforePhotoFile] =
+    useState<File | null>(null);
+
+  const [beforePhotoPreview, setBeforePhotoPreview] =
+    useState<string | null>(() => incident?.beforePhoto || incident?.beforeImageUrl || null);
 
   const [afterPhotoFile, setAfterPhotoFile] =
     useState<File | null>(null);
 
   const [afterPhotoPreview, setAfterPhotoPreview] =
-    useState<string | null>(null);
+    useState<string | null>(() => incident?.afterPhoto || incident?.afterImageUrl || null);
+
+  useEffect(() => {
+    if (!beforePhotoFile && (incident?.beforePhoto || incident?.beforeImageUrl)) {
+      setBeforePhotoPreview(incident.beforePhoto || incident.beforeImageUrl || null);
+    }
+    if (!afterPhotoFile && (incident?.afterPhoto || incident?.afterImageUrl)) {
+      setAfterPhotoPreview(incident.afterPhoto || incident.afterImageUrl || null);
+    }
+  }, [incident?.beforePhoto, incident?.beforeImageUrl, incident?.afterPhoto, incident?.afterImageUrl, beforePhotoFile, afterPhotoFile]);
+
+  const beforeObjectUrlRef = useRef<string | null>(null);
+  const afterObjectUrlRef = useRef<string | null>(null);
 
   const [note, setNote] =
     useState('');
 
   const [submitting, setSubmitting] =
     useState(false);
+
+  /* =======================================================
+     EXIF METADATA VERIFICATION
+  ======================================================= */
+
+  const MAX_PHOTO_DISTANCE_METERS = 500;
+
+  const [beforeExifStatus, setBeforeExifStatus] = useState<
+    'pending' | 'verified' | 'no_gps' | 'too_far'
+  >('pending');
+  const [afterExifStatus, setAfterExifStatus] = useState<
+    'pending' | 'verified' | 'no_gps' | 'too_far'
+  >('pending');
+  const [beforeExifDistance, setBeforeExifDistance] = useState<number | null>(null);
+  const [afterExifDistance, setAfterExifDistance] = useState<number | null>(null);
+
+  const metadataBlocked =
+    beforeExifStatus === 'too_far' ||
+    afterExifStatus === 'too_far' ||
+    beforeExifStatus === 'no_gps' ||
+    afterExifStatus === 'no_gps';
+
+  const verifyPhotoExif = async (
+    file: File,
+    which: 'before' | 'after'
+  ) => {
+    const setStatus = which === 'before' ? setBeforeExifStatus : setAfterExifStatus;
+    const setDistance = which === 'before' ? setBeforeExifDistance : setAfterExifDistance;
+
+    try {
+      const exif = await readExifFromBlob(file);
+      if (!exif.exifGpsAvailable || exif.incidentLatitude === null || exif.incidentLongitude === null) {
+        setStatus('no_gps');
+        setDistance(null);
+        showToast(
+          'GPS Metadata Required',
+          `The ${which} photo has no identified GPS metadata. Submission disabled — please upload a photo captured with location/GPS enabled.`,
+          'urgent'
+        );
+        return;
+      }
+
+      const incLat = incident?.latitude ?? 30.7333;
+      const incLng = incident?.longitude ?? 76.7794;
+      const dist = haversineMeters(incLat, incLng, exif.incidentLatitude, exif.incidentLongitude);
+      setDistance(Math.round(dist));
+
+      if (dist > MAX_PHOTO_DISTANCE_METERS) {
+        setStatus('too_far');
+        showToast(
+          'Location Mismatch',
+          `Photo was taken ${Math.round(dist)}m from the incident. Maximum allowed: ${MAX_PHOTO_DISTANCE_METERS}m. Submission disabled.`,
+          'urgent'
+        );
+      } else {
+        setStatus('verified');
+      }
+    } catch (err) {
+      console.warn('EXIF read error:', err);
+      setStatus('no_gps');
+      setDistance(null);
+      showToast(
+        'GPS Metadata Error',
+        `Could not identify EXIF location metadata in the ${which} photo. Submission disabled.`,
+        'urgent'
+      );
+    }
+  };
 
   const headingRef =
     useRef<HTMLHeadingElement>(null);
@@ -160,20 +249,15 @@ export const FieldJobDetail:
   ======================================================= */
 
   useEffect(() => {
-
     return () => {
-
-      if (afterPhotoPreview) {
-
-        URL.revokeObjectURL(
-          afterPhotoPreview
-        );
-
+      if (beforeObjectUrlRef.current) {
+        URL.revokeObjectURL(beforeObjectUrlRef.current);
       }
-
+      if (afterObjectUrlRef.current) {
+        URL.revokeObjectURL(afterObjectUrlRef.current);
+      }
     };
-
-  }, [afterPhotoPreview]);
+  }, []);
 
 
   /* =======================================================
@@ -352,94 +436,117 @@ export const FieldJobDetail:
     };
 
 
+  const handleBeforePhotoChange = async (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      showToast('Invalid image', 'Please select an image for the before repair photo.', 'warning');
+      return;
+    }
+    if (beforeObjectUrlRef.current) {
+      URL.revokeObjectURL(beforeObjectUrlRef.current);
+    }
+    const url = URL.createObjectURL(file);
+    beforeObjectUrlRef.current = url;
+    setBeforePhotoFile(file);
+    setBeforePhotoPreview(url);
+
+    // Verify EXIF GPS metadata
+    await verifyPhotoExif(file, 'before');
+
+    if (uploadBeforePhoto && !isOffline) {
+      try {
+        await uploadBeforePhoto(incident.id, file);
+        showToast('Before Photo Uploaded', 'Initial site damage evidence recorded.', 'info');
+      } catch (err) {
+        console.warn('Auto-upload before photo notice:', err);
+      }
+    }
+  };
+
+  const handleAfterPhotoChange = async (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      showToast('Invalid image', 'Please select an image for the after repair completion photo.', 'warning');
+      return;
+    }
+    if (afterObjectUrlRef.current) {
+      URL.revokeObjectURL(afterObjectUrlRef.current);
+    }
+    const url = URL.createObjectURL(file);
+    afterObjectUrlRef.current = url;
+    setAfterPhotoFile(file);
+    setAfterPhotoPreview(url);
+
+    // Verify EXIF GPS metadata
+    await verifyPhotoExif(file, 'after');
+  };
+
+  const hasBefore = Boolean(beforePhotoFile || beforePhotoPreview || incident?.beforePhoto || incident?.beforeImageUrl);
+  const hasAfter = Boolean(afterPhotoFile || afterPhotoPreview || incident?.afterPhoto || incident?.afterImageUrl);
+
+  const workStatus: 'In Progress' | 'Ready for Completion' | 'Completed' =
+    incident?.status === 'resolved' || incident?.status === 'closed'
+      ? 'Completed'
+      : hasBefore && hasAfter
+      ? 'Ready for Completion'
+      : 'In Progress';
+
   const submitCompletion =
     async () => {
 
-      if (!afterPhotoFile) {
-
+      if (!hasBefore || !hasAfter) {
         showToast(
-          'Photo required',
-          'Take a completion photo before submitting the job.',
+          'Both photos required',
+          'Upload both Before Repair and After Repair photos to complete the task.',
           'warning'
         );
-
         return;
       }
 
+      if (metadataBlocked) {
+        showToast(
+          'Location Mismatch',
+          'One or more photos were taken too far from the incident location. Replace the flagged photo(s) to proceed.',
+          'urgent'
+        );
+        return;
+      }
 
       if (isOffline) {
-
         showToast(
           'Connection required',
           'Smart Closure needs to send the completion evidence to the SANKET backend. Reconnect before submitting.',
           'warning'
         );
-
         return;
       }
 
-
       setSubmitting(true);
-      setPhase(
-        'analysis'
-      );
-
+      setPhase('analysis');
 
       try {
+        const location = await getFreshLocation();
 
-        const location =
-          await getFreshLocation();
+        if (afterPhotoFile) {
+          await submitClosureEvidence(
+            incident.id,
+            afterPhotoFile,
+            location.latitude,
+            location.longitude,
+            location.accuracyMeters,
+            beforePhotoFile
+          );
+        }
 
-
-        /*
-         * Real completion photo + real device GPS
-         * are sent to the backend.
-         */
-        await submitClosureEvidence(
-          incident.id,
-          afterPhotoFile,
-          location.latitude,
-          location.longitude,
-          location.accuracyMeters
-        );
-
-
-        /*
-         * CivicContext refreshes the incident list after
-         * the backend response.
-         *
-         * The refreshed incident therefore contains only
-         * backend-persisted closure information.
-         */
-        setPhase(
-          'submitted'
-        );
-
+        setPhase('submitted');
       } catch (error) {
-
-        console.error(
-          'Smart Closure submission failed:',
-          error
-        );
-
-
-        setPhase(
-          'in_progress'
-        );
-
-
+        console.error('Smart Closure submission failed:', error);
+        setPhase('in_progress');
         showToast(
           'Closure submission failed',
-          error instanceof Error
-            ? error.message
-            : 'Unable to submit completion evidence.',
+          error instanceof Error ? error.message : 'Unable to submit completion evidence.',
           'urgent'
         );
-
       } finally {
-
         setSubmitting(false);
-
       }
     };
 
@@ -781,149 +888,263 @@ export const FieldJobDetail:
           </label>
 
 
-          {/* COMPLETION PHOTO */}
+          {/* STATUS OVERVIEW & INDICATORS */}
+          <div className="bg-white border border-[#E5E3DC] rounded-xl p-4 mt-5 shadow-xs">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase text-[#565C68] tracking-wider">
+                Work Status
+              </span>
+              <span
+                className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                  workStatus === 'Completed'
+                    ? 'bg-[#EBF7EF] text-[#1E6B42] border border-[#C8EAD4]'
+                    : workStatus === 'Ready for Completion'
+                    ? 'bg-[#EBF3FF] text-[#2563EB] border border-[#BFDBFE]'
+                    : 'bg-[#FFFBEB] text-[#B45309] border border-[#FDE68A]'
+                }`}
+              >
+                {workStatus}
+              </span>
+            </div>
 
-          <div className="mt-5">
-
-            <SectionHeading
-              eyebrow="COMPLETION EVIDENCE"
-              title="After-repair photo"
-            />
-
+            <div className="grid grid-cols-2 gap-3 mt-3 pt-3 border-t border-[#F4F3EF]">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-[#565C68] font-medium">Before Photo:</span>
+                <span className={`font-bold ${hasBefore ? 'text-[#1E6B42]' : 'text-[#C54E38]'}`}>
+                  {hasBefore ? '✓ Uploaded' : '○ Pending'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-[#565C68] font-medium">After Photo:</span>
+                <span className={`font-bold ${hasAfter ? 'text-[#1E6B42]' : 'text-[#C54E38]'}`}>
+                  {hasAfter ? '✓ Uploaded' : '○ Pending'}
+                </span>
+              </div>
+            </div>
           </div>
 
+          {/* SECTION 1: BEFORE REPAIR */}
+          <div className="mt-6 bg-white border border-[#E5E3DC] rounded-xl p-4">
+            <div className="flex items-center justify-between mb-2">
+              <SectionHeading
+                eyebrow="INTAKE EVIDENCE"
+                title="Before Repair"
+              />
+              <span className={`text-xs font-bold px-2 py-0.5 rounded ${
+                hasBefore
+                  ? 'bg-[#EBF7EF] text-[#1E6B42] border border-[#C8EAD4]'
+                  : 'bg-[#FAF9F5] text-[#7E8592] border border-[#E5E3DC]'
+              }`}>
+                {hasBefore ? 'Uploaded' : 'Pending'}
+              </span>
+            </div>
+            <p className="text-xs text-[#7E8592] mb-3">
+              Capture or inspect the initial damage at the site before starting work.
+            </p>
 
-          <label className="fw-upload-zone">
+            {beforePhotoPreview ? (
+              <div className="rounded-xl overflow-hidden border border-[#E5E3DC] bg-[#FAF9F5]">
+                <img
+                  src={beforePhotoPreview}
+                  alt="Before repair damage condition"
+                  className="w-full h-48 sm:h-56 object-cover"
+                />
+                <div className="p-3 bg-white border-t border-[#E5E3DC] flex items-center justify-between">
+                  <span className="text-xs text-[#565C68] font-medium flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-[#1E6B42]" />
+                    Before photo active
+                  </span>
+                  <label className="text-xs font-bold text-[#2C5E48] hover:underline cursor-pointer flex items-center gap-1">
+                    <Camera className="w-3.5 h-3.5" />
+                    Replace Photo
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      className="hidden"
+                      onChange={e => {
+                        const f = e.target.files?.[0];
+                        if (f) handleBeforePhotoChange(f);
+                      }}
+                    />
+                  </label>
+                </div>
+              </div>
+            ) : (
+              <label className="fw-upload-zone cursor-pointer">
+                <ImageUp className="h-8 w-8 text-[#7E8592]" aria-hidden="true" />
+                <b>Upload / Capture Before Photo</b>
+                <span>Initial condition before commencing repair</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  aria-label="Attach before-repair photo"
+                  onChange={e => {
+                    const f = e.target.files?.[0];
+                    if (f) handleBeforePhotoChange(f);
+                  }}
+                />
+              </label>
+            )}
+          </div>
+
+          {/* SECTION 2: AFTER REPAIR */}
+          <div className="mt-6 bg-white border border-[#E5E3DC] rounded-xl p-4">
+            <div className="flex items-center justify-between mb-2">
+              <SectionHeading
+                eyebrow="COMPLETION EVIDENCE"
+                title="After Repair"
+              />
+              <span className={`text-xs font-bold px-2 py-0.5 rounded ${
+                hasAfter
+                  ? 'bg-[#EBF7EF] text-[#1E6B42] border border-[#C8EAD4]'
+                  : 'bg-[#FAF9F5] text-[#7E8592] border border-[#E5E3DC]'
+              }`}>
+                {hasAfter ? 'Uploaded' : 'Pending'}
+              </span>
+            </div>
+            <p className="text-xs text-[#7E8592] mb-3">
+              Capture or upload the resolved site condition after work is finished.
+            </p>
 
             {afterPhotoPreview ? (
-
-              <img
-                src={afterPhotoPreview}
-                alt="After-repair completion evidence"
-              />
-
-            ) : (
-
-              <>
-
-                <ImageUp
-                  className="h-8 w-8"
-                  aria-hidden="true"
+              <div className="rounded-xl overflow-hidden border border-[#C8EAD4] bg-[#EBF7EF]/30">
+                <img
+                  src={afterPhotoPreview}
+                  alt="After repair completion condition"
+                  className="w-full h-48 sm:h-56 object-cover"
                 />
-
-                <b>
-                  Take completion photo
-                </b>
-
-                <span>
-                  Required for Smart Closure verification
-                </span>
-
-              </>
-
+                <div className="p-3 bg-white border-t border-[#C8EAD4] flex items-center justify-between">
+                  <span className="text-xs text-[#1E6B42] font-medium flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-[#1E6B42]" />
+                    After photo active
+                  </span>
+                  <label className="text-xs font-bold text-[#2C5E48] hover:underline cursor-pointer flex items-center gap-1">
+                    <Camera className="w-3.5 h-3.5" />
+                    Replace Photo
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      className="hidden"
+                      onChange={e => {
+                        const f = e.target.files?.[0];
+                        if (f) handleAfterPhotoChange(f);
+                      }}
+                    />
+                  </label>
+                </div>
+              </div>
+            ) : (
+              <label className="fw-upload-zone cursor-pointer">
+                <ImageUp className="h-8 w-8 text-[#7E8592]" aria-hidden="true" />
+                <b>Upload / Capture After Photo</b>
+                <span>Required for Smart Closure verification</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  aria-label="Attach after-repair photo"
+                  onChange={e => {
+                    const f = e.target.files?.[0];
+                    if (f) handleAfterPhotoChange(f);
+                  }}
+                />
+              </label>
             )}
+          </div>
 
-
-            <input
-              type="file"
-              accept="image/*"
-              capture="environment"
-              aria-label="Attach after-repair photo"
-              onChange={e => {
-
-                const file =
-                  e.target.files?.[0];
-
-
-                if (!file) {
-                  return;
-                }
-
-
-                if (
-                  !file.type.startsWith(
-                    'image/'
-                  )
-                ) {
-
-                  showToast(
-                    'Invalid evidence',
-                    'Please select an image for the completion photo.',
-                    'warning'
-                  );
-
-                  return;
-                }
-
-
-                if (
-                  afterPhotoPreview
-                ) {
-
-                  URL.revokeObjectURL(
-                    afterPhotoPreview
-                  );
-
-                }
-
-
-                setAfterPhotoFile(
-                  file
-                );
-
-
-                setAfterPhotoPreview(
-                  URL.createObjectURL(
-                    file
-                  )
-                );
-
-              }}
-            />
-
-          </label>
-
-
-          <button
-            className="fw-primary-button mt-4"
-            onClick={
-              submitCompletion
-            }
-            disabled={
-              !afterPhotoFile ||
-              submitting ||
-              isOffline
-            }
-          >
-
-            <Send
-              className="h-4 w-4"
-              aria-hidden="true"
-            />
-
-
-            {submitting
-              ? 'SUBMITTING EVIDENCE…'
-              : 'SUBMIT COMPLETION'}
-
-          </button>
-
-
-          {!afterPhotoFile && (
-
-            <p className="mt-2 text-xs text-[#7E8592]">
-              Add an after-repair photo to continue.
-            </p>
-
+          {/* METADATA VERIFICATION STATUS */}
+          {(beforeExifStatus !== 'pending' || afterExifStatus !== 'pending') && (
+            <div className={`mt-4 rounded-xl border p-3 ${
+              metadataBlocked
+                ? 'bg-red-50 border-red-300'
+                : 'bg-[#EBF7EF] border-[#C8EAD4]'
+            }`}>
+              <div className="flex items-center gap-2 mb-2">
+                {metadataBlocked ? (
+                  <MapPinOff className="h-4 w-4 text-red-600" />
+                ) : (
+                  <MapPin className="h-4 w-4 text-[#1E6B42]" />
+                )}
+                <span className={`text-xs font-bold uppercase tracking-wider ${
+                  metadataBlocked ? 'text-red-700' : 'text-[#1E6B42]'
+                }`}>
+                  {metadataBlocked
+                    ? (beforeExifStatus === 'no_gps' || afterExifStatus === 'no_gps'
+                        ? 'GPS Metadata Missing — Submission Disabled'
+                        : 'Location Mismatch Detected — Submission Disabled')
+                    : 'Metadata Verified'}
+                </span>
+              </div>
+              <div className="space-y-1">
+                {beforeExifStatus !== 'pending' && (
+                  <p className="text-xs text-[#565C68]">
+                    <strong>Before Photo:</strong>{' '}
+                    {beforeExifStatus === 'verified'
+                      ? `✓ GPS verified (${beforeExifDistance}m from incident)`
+                      : beforeExifStatus === 'too_far'
+                      ? `✗ Too far — ${beforeExifDistance}m from incident (max ${MAX_PHOTO_DISTANCE_METERS}m)`
+                      : '✗ No GPS metadata in image (Submission disabled)'}
+                  </p>
+                )}
+                {afterExifStatus !== 'pending' && (
+                  <p className="text-xs text-[#565C68]">
+                    <strong>After Photo:</strong>{' '}
+                    {afterExifStatus === 'verified'
+                      ? `✓ GPS verified (${afterExifDistance}m from incident)`
+                      : afterExifStatus === 'too_far'
+                      ? `✗ Too far — ${afterExifDistance}m from incident (max ${MAX_PHOTO_DISTANCE_METERS}m)`
+                      : '✗ No GPS metadata in image (Submission disabled)'}
+                  </p>
+                )}
+              </div>
+              {metadataBlocked && (
+                <p className="mt-2 text-xs font-medium text-red-700">
+                  {beforeExifStatus === 'no_gps' || afterExifStatus === 'no_gps'
+                    ? 'Upload photos taken with device location/GPS enabled to identify metadata and enable submission.'
+                    : 'Replace the flagged photo(s) with images taken at the incident site to enable submission.'}
+                </p>
+              )}
+            </div>
           )}
 
+          <button
+            className="fw-primary-button mt-6 w-full"
+            onClick={submitCompletion}
+            disabled={
+              !hasBefore ||
+              !hasAfter ||
+              submitting ||
+              isOffline ||
+              metadataBlocked
+            }
+          >
+            <Send className="h-4 w-4" aria-hidden="true" />
+            {submitting
+              ? 'SUBMITTING EVIDENCE…'
+              : metadataBlocked
+              ? (beforeExifStatus === 'no_gps' || afterExifStatus === 'no_gps'
+                  ? 'SUBMISSION BLOCKED — MISSING GPS METADATA'
+                  : 'SUBMISSION BLOCKED — LOCATION MISMATCH')
+              : 'COMPLETE TASK'}
+          </button>
+
+          {(!hasBefore || !hasAfter) && (
+            <p className="mt-2 text-center text-xs text-[#7E8592]">
+              {!hasBefore && !hasAfter
+                ? 'Upload both Before and After photos to enable task completion.'
+                : !hasBefore
+                ? 'Before photo is required to enable task completion.'
+                : 'After photo is required to enable task completion.'}
+            </p>
+          )}
 
           {isOffline && (
-
-            <p className="mt-2 text-xs text-[#C54E38]">
+            <p className="mt-2 text-xs text-[#C54E38] text-center">
               Reconnect before submitting Smart Closure evidence.
             </p>
-
           )}
 
         </section>

@@ -94,21 +94,139 @@ export const jobPriority = (incident: Incident): JobPriority => {
 
 /* ---------------- Job selection ---------------- */
 
-/** Prototype: incidents "assigned to this worker" (assigned or active work). */
-export const toMyJobs = (incidents: Incident[]): Incident[] =>
-  incidents.filter((i) => i.status === 'assigned' || i.status === 'in_progress');
+export const DEPARTMENTS = [
+  'Electrical',
+  'Roads',
+  'Water Supply',
+  'Sanitation',
+  'Horticulture',
+] as const;
 
-/** Completed/verified jobs for history. */
-export const toCompletedJobs = (incidents: Incident[]): Incident[] =>
-  incidents.filter((i) => i.status === 'resolved' || i.status === 'needs_review');
+export type Department = typeof DEPARTMENTS[number];
 
-/** Queue ordering: highest urgency first (priority → waiting days). */
+/** Deterministic Category -> Department mapping on frontend */
+export const mapCategoryToDepartment = (
+  category?: string | null,
+  dept?: string | null
+): Department => {
+  // If dept is already one of the 5 canonical departments, check category first, else use dept
+  const cat = (category || '').toLowerCase().trim();
+  if (
+    cat.includes('streetlight') ||
+    cat.includes('street light') ||
+    cat.includes('signal') ||
+    cat.includes('electric') ||
+    cat.includes('light')
+  ) {
+    return 'Electrical';
+  }
+  if (
+    cat.includes('water') ||
+    cat.includes('leak') ||
+    cat.includes('pipeline') ||
+    cat.includes('pipe') ||
+    cat.includes('drain')
+  ) {
+    return 'Water Supply';
+  }
+  if (
+    cat.includes('garbage') ||
+    cat.includes('waste') ||
+    cat.includes('sanitat') ||
+    cat.includes('clean')
+  ) {
+    return 'Sanitation';
+  }
+  if (
+    cat.includes('tree') ||
+    cat.includes('horticult') ||
+    cat.includes('green') ||
+    cat.includes('park') ||
+    cat.includes('branch')
+  ) {
+    return 'Horticulture';
+  }
+  if (
+    cat.includes('pothole') ||
+    cat.includes('road') ||
+    cat.includes('pavement') ||
+    cat.includes('asphalt') ||
+    cat.includes('bridge')
+  ) {
+    return 'Roads';
+  }
+
+  // Check department string if category was generic/other
+  const d = (dept || '').toLowerCase().trim();
+  if (d.includes('elect') || d.includes('light')) return 'Electrical';
+  if (d.includes('water') || d.includes('drain') || d.includes('pipe')) return 'Water Supply';
+  if (d.includes('sanit') || d.includes('waste') || d.includes('garb')) return 'Sanitation';
+  if (d.includes('hort') || d.includes('tree') || d.includes('green')) return 'Horticulture';
+  if (d.includes('road') || d.includes('pothole') || d.includes('pavement')) return 'Roads';
+
+  // If dept strictly matches canonical name
+  for (const dep of DEPARTMENTS) {
+    if (dep.toLowerCase() === d) return dep;
+  }
+
+  return 'Roads';
+};
+
+/** Default field workers registry */
+export const DEFAULT_WORKERS: Record<Department, { id: string; name: string }> = {
+  Electrical: { id: 'E-104', name: 'Rajesh Kumar' },
+  Roads: { id: 'R-203', name: 'Vikas Sen' },
+  'Water Supply': { id: 'W-117', name: 'Suresh Sharma' },
+  Sanitation: { id: 'S-052', name: 'Amit Singh' },
+  Horticulture: { id: 'H-031', name: 'Gurpreet Gill' },
+};
+
+/** Incidents assigned to this worker's department */
+export const toMyJobs = (incidents: Incident[], department?: string | null): Incident[] => {
+  return incidents.filter((i) => {
+    // Resolved and closed jobs belong in history
+    if (i.status === 'resolved' || i.status === 'closed') return false;
+
+    if (department) {
+      const resolved = mapCategoryToDepartment(i.category, i.assignedDepartment || i.department);
+      return resolved.toLowerCase().trim() === department.toLowerCase().trim();
+    }
+    return true;
+  });
+};
+
+/** Completed/verified jobs for history filtered by department */
+export const toCompletedJobs = (incidents: Incident[], department?: string | null): Incident[] => {
+  return incidents.filter((i) => {
+    const isResolved = i.status === 'resolved' || i.status === 'closed';
+    if (!isResolved) return false;
+
+    if (department) {
+      const resolved = mapCategoryToDepartment(i.category, i.assignedDepartment || i.department);
+      return resolved.toLowerCase().trim() === department.toLowerCase().trim();
+    }
+    return true;
+  });
+};
+
 export const sortJobQueue = (jobs: Incident[]): Incident[] =>
-  [...jobs].sort(
-    (a, b) =>
-      (b.riskLevel === 'critical' ? 2 : b.riskLevel === 'high' ? 1 : 0) -
-        (a.riskLevel === 'critical' ? 2 : a.riskLevel === 'high' ? 1 : 0) || b.waitingDays - a.waitingDays
-  );
+  [...jobs].sort((a, b) => {
+    // 1. Newly received / citizen-submitted tasks are placed right at the top
+    const aNew = (a as any).isMyReport || a.waitingDays === 0 ? 1 : 0;
+    const bNew = (b as any).isMyReport || b.waitingDays === 0 ? 1 : 0;
+    if (aNew !== bNew) return bNew - aNew;
+
+    // 2. Risk score (descending)
+    const riskDiff = (b.riskScore ?? 0) - (a.riskScore ?? 0);
+    if (riskDiff !== 0) return riskDiff;
+
+    // 3. Reported date / last updated (newest first)
+    const aTime = new Date(a.reportedAt || a.lastUpdated || 0).getTime();
+    const bTime = new Date(b.reportedAt || b.lastUpdated || 0).getTime();
+    if (bTime !== aTime) return bTime - aTime;
+
+    return (b.waitingDays ?? 0) - (a.waitingDays ?? 0);
+  });
 
 export const categoryTitle = (incident: Incident): string =>
   incident.title.length < 46 ? incident.title : incident.category.replace('_', ' ');
