@@ -37,6 +37,11 @@ export const IncidentsView: React.FC = () => {
     setRecurringOnly
   } = useCivic();
 
+  const getEffectiveStatus = (inc: Incident): IncidentStatus =>
+    inc.assignmentStatus === 'Completed' || inc.status === 'resolved' || (inc as any).status === 'closed'
+      ? 'resolved'
+      : inc.status;
+
   // Filtered dataset
   const filteredIncidents = incidents.filter((inc) => {
     const matchesSearch =
@@ -54,11 +59,18 @@ export const IncidentsView: React.FC = () => {
     else if (riskFilter === 'medium') matchesRisk = inc.riskScore >= 50 && inc.riskScore < 70;
     else if (riskFilter === 'low') matchesRisk = inc.riskScore < 50;
 
-    const matchesStatus = statusFilter === 'all' || inc.status === statusFilter;
+    const matchesStatus = statusFilter === 'all' || getEffectiveStatus(inc) === statusFilter;
 
     const matchesRecurring = !recurringOnly || inc.isRecurring;
 
     return matchesSearch && matchesCategory && matchesRisk && matchesStatus && matchesRecurring;
+  }).sort((a, b) => {
+    const aNew = (a as any).isMyReport ? 1 : 0;
+    const bNew = (b as any).isMyReport ? 1 : 0;
+    if (aNew !== bNew) return bNew - aNew;
+    const riskDiff = (b.riskScore ?? 0) - (a.riskScore ?? 0);
+    if (riskDiff !== 0) return riskDiff;
+    return new Date(b.reportedAt || 0).getTime() - new Date(a.reportedAt || 0).getTime();
   });
 
   const clearFilters = () => {
@@ -270,7 +282,7 @@ export const IncidentsView: React.FC = () => {
                       </td>
 
                       <td className="px-4 py-3.5">
-                        <StatusBadge status={inc.status} />
+                        <StatusBadge status={getEffectiveStatus(inc)} />
                       </td>
 
                       <td className="px-4 py-3.5 text-[#565C68] text-[11px]">
@@ -324,7 +336,7 @@ export const IncidentsView: React.FC = () => {
 
                 <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-[#F4F3EF] text-xs">
                   <CategoryBadge category={inc.category} />
-                  <StatusBadge status={inc.status} />
+                  <StatusBadge status={getEffectiveStatus(inc)} />
                   <span className="font-mono text-[#7E8592]">{inc.waitingDays}d waiting</span>
                 </div>
 

@@ -23,19 +23,33 @@ const NAV_ITEMS: {
 export const FieldHeader: React.FC<{
   active: FieldRoute;
   unreadCount: number;
+  department?: string | null;
   onNavigate: (route: FieldRoute) => void;
   onNotifications: () => void;
-}> = ({ active, unreadCount, onNavigate, onNotifications }) => (
+  onSwitchDepartment?: () => void;
+}> = ({ active, unreadCount, department, onNavigate, onNotifications, onSwitchDepartment }) => (
   <header className="fw-header">
     <div className="fw-frame fw-header-inner">
       <button
-        onClick={() => onNavigate('home')}
+        onClick={() => {
+          if (onSwitchDepartment) onSwitchDepartment();
+          onNavigate('home');
+        }}
         aria-label="CivicLens field operations home"
         className="shrink-0"
       >
         <CivicLensLogo compact />
       </button>
       <span className="fw-zone-chip">PWD · ZONE 1</span>
+      {department && onSwitchDepartment && (
+        <button
+          onClick={onSwitchDepartment}
+          className="fw-zone-chip hover:bg-[#E5E3DC] cursor-pointer transition-colors font-bold text-[#2C5E48]"
+          title="Click to change department"
+        >
+          {department.toUpperCase()} ▾
+        </button>
+      )}
       <nav className="fw-desktop-nav" aria-label="Field navigation">
         {(['home', 'jobs', 'map', 'history'] as FieldRoute[]).map((item) => (
           <button

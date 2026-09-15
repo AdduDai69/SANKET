@@ -278,7 +278,7 @@ export const DashboardView: React.FC = () => {
                   </div>
 
                   <div className="mt-2.5 flex items-center justify-between text-[11px] text-[#7E8592] pt-2 border-t border-[#FAF9F5]">
-                    <StatusBadge status={inc.status} />
+                    <StatusBadge status={(inc.assignmentStatus === 'Completed' || inc.status === 'resolved' || (inc as any).status === 'closed') ? 'resolved' : inc.status} />
                     <span className="text-[#2C5E48] font-bold group-hover:underline flex items-center gap-0.5">
                       Investigate <ChevronRight className="w-3 h-3" />
                     </span>

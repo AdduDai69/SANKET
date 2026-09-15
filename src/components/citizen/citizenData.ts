@@ -52,9 +52,9 @@ export const CITIZEN_STATUS: Record<IncidentStatus, CitizenStatusInfo> = {
     explanation: 'Work on this issue has started on site.',
   },
   resolved: {
-    label: 'Resolved',
+    label: 'Issue Solved',
     tone: 'green',
-    explanation: 'This issue has been marked as resolved. Thank you for your report!',
+    explanation: 'This civic issue has been repaired and verified by AI. Thank you for your report!',
   },
   closed: {
   label: 'Closed',

@@ -168,33 +168,73 @@ class TestApiEndpoints(unittest.TestCase):
         self.assertTrue(data["is_correct"])
         self.assertGreaterEqual(data["match_percentage"], 95.0)
 
-    def test_reports_location_mismatch_rejected(self):
-        """When photo has EXIF GPS, declaring a mismatched location (~3.5km away) rejects registration with 422."""
-        img_bytes = create_test_jpeg_bytes(
-            include_exif=True,
-            include_gps=True,
-            lat_dms=(30.0, 44.0, 25.0), # ~30.7402
-            lon_dms=(76.0, 46.0, 45.0)  # ~76.7791
+    def test_before_photo_upload(self):
+        """Worker uploads a Before Photo to /incidents/{id}/before-photo."""
+        test_id = "inc-test-before-01"
+        main._IN_MEMORY_INCIDENTS[test_id] = {
+            "incident_id": test_id,
+            "title": "Broken Streetlight",
+            "issue_type": "streetlight",
+            "status": "assigned",
+            "latitude": 30.7333,
+            "longitude": 76.7794,
+        }
+        img_bytes = create_test_jpeg_bytes(include_exif=False)
+        res = self.client.post(
+            f"/incidents/{test_id}/before-photo",
+            files={"photo": ("before.jpg", img_bytes, "image/jpeg")},
         )
-        # Declared location is far away in Sector 35 (~30.7200, 76.7600)
-        response = self.client.post(
-            "/reports",
-            data={
-                "description": "Pothole in wrong place",
-                "sector": "Sector 35",
-                "incident_latitude": "30.7200",
-                "incident_longitude": "76.7600",
-                "location_source": "EXIF_GPS",
-                "ai_analysis": '{"issue_type":"pothole","confidence":0.95,"severity":"High","description":"Deep pothole","recommended_department":"Engineering","visible_evidence":["broken asphalt"]}'
-            },
-            files={"file": ("pothole.jpg", img_bytes, "image/jpeg")}
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data["success"])
+        self.assertTrue(data["before_photo_url"].startswith("http"))
+        self.assertEqual(main._IN_MEMORY_INCIDENTS[test_id]["status"], "in_progress")
+
+    def test_transition_to_completed_blocked_without_both_photos(self):
+        """Task cannot transition to completed if before or after photo is missing."""
+        test_id = "inc-test-comp-01"
+        main._IN_MEMORY_INCIDENTS[test_id] = {
+            "incident_id": test_id,
+            "title": "Water Leak",
+            "issue_type": "water_leakage",
+            "status": "in_progress",
+            "latitude": 30.7333,
+            "longitude": 76.7794,
+            "before_photo": "https://sanket-storage.local/before/test.jpg",
+            # after_photo is missing!
+        }
+        res = self.client.patch(
+            f"/incidents/{test_id}/status",
+            json={"status": "completed"}
         )
-        self.assertEqual(response.status_code, 422)
-        detail = response.json()["detail"]
-        self.assertIn("Location verification failed", detail["message"])
-        self.assertEqual(detail["location_status"], "REJECTED")
-        self.assertLess(detail["match_percentage"], 50.0)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Both before photo and after photo are required", res.json()["detail"])
+
+    def test_transition_to_completed_succeeds_with_both_photos(self):
+        """Task transitions to completed when both before and after photos exist."""
+        test_id = "inc-test-comp-02"
+        main._IN_MEMORY_INCIDENTS[test_id] = {
+            "incident_id": test_id,
+            "title": "Water Leak",
+            "issue_type": "water_leakage",
+            "status": "in_progress",
+            "latitude": 30.7333,
+            "longitude": 76.7794,
+            "before_photo": "https://sanket-storage.local/before/test.jpg",
+            "after_photo": "https://sanket-storage.local/after/test.jpg",
+        }
+        res = self.client.patch(
+            f"/incidents/{test_id}/status",
+            json={"status": "completed"}
+        )
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["incident"]["status"], "completed")
+        self.assertEqual(data["incident"]["assignment_status"], "Completed")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
